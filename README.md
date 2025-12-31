@@ -6,29 +6,29 @@
 
 | 请求者页面 | 车主页面 |
 |:---:|:---:|
-| [🔗 在线预览](https://htmlpreview.github.io/?https://github.com/lesnolie/movecar/blob/main/preview-requester.html) | [🔗 在线预览](https://htmlpreview.github.io/?https://github.com/lesnolie/movecar/blob/main/preview-owner.html) |
+| [:link: 在线预览](https://htmlpreview.github.io/?https://github.com/lesnolie/movecar/blob/main/preview-requester.html) | [:link: 在线预览](https://htmlpreview.github.io/?https://github.com/lesnolie/movecar/blob/main/preview-owner.html) |
 
 ## 为什么需要它？
 
-- 🚗 **被堵车却找不到车主** - 干着急没办法
-- 📱 **传统挪车码暴露电话** - 隐私泄露、骚扰电话不断
-- 😈 **恶意扫码骚扰** - 有人故意反复扫码打扰
-- 🤔 **路人好奇扫码** - 并不需要挪车却触发通知
+- :car: **被堵车却找不到车主** - 干着急没办法
+- :phone: **传统挪车码暴露电话** - 隐私泄露、骚扰电话不断
+- :smiling_imp: **恶意扫码骚扰** - 有人故意反复扫码打扰
+- :thinking: **路人好奇扫码** - 并不需要挪车却触发通知
 
 ## 这个系统如何解决？
 
-- ✅ **不暴露电话号码** - 通过推送通知联系，保护隐私
-- ✅ **双向位置共享** - 车主可确认请求者确实在车旁
-- ✅ **无位置延迟 30 秒** - 降低恶意骚扰的动力
-- ✅ **免费部署** - Cloudflare Workers 免费额度完全够用
-- ✅ **无需服务器** - Serverless 架构，零运维成本
+- :white_check_mark: **不暴露电话号码** - 通过推送通知联系，保护隐私
+- :white_check_mark: **双向位置共享** - 车主可确认请求者确实在车旁
+- :white_check_mark: **无位置延迟 30 秒** - 降低恶意骚扰的动力
+- :white_check_mark: **免费部署** - Cloudflare Workers 免费额度完全够用
+- :white_check_mark: **无需服务器** - Serverless 架构，零运维成本
 
 ## 为什么使用 Bark 推送？
 
-- 🔔 支持「紧急 / 重要 / 警告」通知级别
-- 🎵 可自定义通知音效
-- 🌙 **即使开启勿扰模式也能收到提醒**
-- 📱 安卓用户：原理相通，将 Bark 替换为安卓推送服务即可（如 Pushplus、Server酱）
+- :bell: 支持「紧急 / 重要 / 警告」通知级别
+- :musical_note: 可自定义通知音效
+- :crescent_moon: **即使开启勿扰模式也能收到提醒**
+- :phone: 安卓用户：原理相通，将 Bark 替换为安卓推送服务即可（如 Pushplus、Server酱）
 
 ## 使用流程
 
@@ -128,7 +128,7 @@
 3. 添加「扫码通知车主」提示文字
 4. 打印、过塑，贴在车上
 
-> 💡 用 AI 生成独一无二的挪车牌，让你的爱车更有个性！
+> :bulb: 用 AI 生成独一无二的挪车牌，让你的爱车更有个性！
 
 ### 效果展示
 
@@ -164,10 +164,11 @@ async function handleRequest(request) {
 }
 ```
 
-> ⚠️ 曾经被境外流量攻击过，强烈建议开启地区限制！
+> :warning: 曾经被境外流量攻击过，强烈建议开启地区限制！
 
 ## License
 
 MIT
+
 
 
