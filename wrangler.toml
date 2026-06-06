@@ -1,0 +1,18 @@
+name = "movecar"
+main = "movecar.js"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+# 自定义域名路由
+routes = [
+  { pattern = "movecar.your-domain.com", zone_name = "your-domain.com" }
+]
+
+# KV 存储绑定
+kv_namespaces = [
+  { binding = "MOVE_CAR_STATUS", id = "YOUR_KV_NAMESPACE_ID" }
+]
+
+# 环境变量
+[vars]
+EMAIL_TO = "your-email@example.com"
