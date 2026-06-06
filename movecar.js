@@ -242,27 +242,44 @@ async function handleNotify(request, url) {
     }
 
     const encodedConfirmUrl = encodeURIComponent(confirmUrl);
-    const barkApiUrl = `${BARK_URL}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${encodedConfirmUrl}`;
+    
+    // 构建 Bark URL（如果配置了的话）
+    const barkUrl = typeof BARK_URL !== 'undefined' ? BARK_URL : '';
+    let barkApiUrl = '';
+    if (barkUrl) {
+      barkApiUrl = `${barkUrl}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${encodedConfirmUrl}`;
+    }
 
-    // 并行发送 Bark 推送和邮件通知（互不阻塞）
-    const [barkResult, emailResult] = await Promise.allSettled([
-      fetch(barkApiUrl),
+    // 并行发送邮件和 Bark 推送（邮件为主要通知方式）
+    const promises = [
       sendEmail('🚗 挪车请求', message, location, confirmUrl)
-    ]);
-
-    // 检查 Bark 结果（Bark 是主要通知方式，失败则报错）
-    const barkOk = barkResult.status === 'fulfilled' && barkResult.value?.ok;
+    ];
+    
+    // 如果配置了 Bark，也发送 Bark 推送
+    if (barkApiUrl) {
+      promises.push(fetch(barkApiUrl));
+    }
+    
+    const results = await Promise.allSettled(promises);
+    
+    // 检查邮件结果（主要通知方式）
+    const emailResult = results[0];
     const emailStatus = emailResult.status === 'fulfilled' ? emailResult.value : { sent: false, reason: 'rejected' };
-
-    if (!barkOk) {
-      throw new Error('Bark API Error');
+    
+    // 检查 Bark 结果（可选）
+    let barkStatus = { sent: false, reason: 'not_configured' };
+    if (barkApiUrl && results.length > 1) {
+      const barkResult = results[1];
+      barkStatus = barkResult.status === 'fulfilled' && barkResult.value?.ok 
+        ? { sent: true } 
+        : { sent: false, reason: 'failed' };
     }
 
     return new Response(JSON.stringify({ 
       success: true,
       notifications: {
-        bark: { sent: true },
-        email: emailStatus
+        email: emailStatus,
+        bark: barkStatus
       }
     }), {
       headers: { 'Content-Type': 'application/json' }
