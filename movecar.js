@@ -93,8 +93,18 @@ async function sendEmail(subject, message, location, confirmUrl) {
       return { sent: false, reason: 'not_configured' };
     }
     
+    // HTML 转义函数（防止 XSS）
+    const escapeHtml = (str) => str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+    
     // 解析留言内容
-    const textBody = message.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n');
+    const rawBody = message || '车旁有人等待';
+    const textBody = rawBody.replace(/\\n/g, '\n');
+    const safeBody = escapeHtml(textBody).replace(/\n/g, '<br>');
     
     // 构建位置信息
     let locationHtml = '';
@@ -124,7 +134,7 @@ async function sendEmail(subject, message, location, confirmUrl) {
         </div>
         <div style="padding: 24px;">
           <div style="padding: 16px; background: #f7fafc; border-radius: 12px; margin-bottom: 16px;">
-            <p style="margin: 0; color: #4a5568; font-size: 15px; line-height: 1.6;">💬 ${textBody}</p>
+            <p style="margin: 0; color: #4a5568; font-size: 15px; line-height: 1.6;">💬 ${safeBody}</p>
           </div>
           ${locationHtml}
           <a href="${confirmUrl || '#'}" style="display: block; text-align: center; padding: 14px; background: linear-gradient(135deg, #0093E9 0%, #80D0C7 100%); color: white; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 16px;">🚀 确认挪车</a>
