@@ -36,8 +36,8 @@ async function handleRequest(request) {
   if (path === '/api/test-telegram' && debugKey === 'YOUR_DEBUG_KEY') {
     try {
       const chatId = typeof TG_CHAT_ID !== 'undefined' ? TG_CHAT_ID : 'not set';
-      // 测试位置（北京天安门）
-      const testLocation = { lat: 39.9042, lng: 116.4074 };
+      // 测试位置（北京天安门 - GCJ02 坐标）
+      const testLocation = { lat: 39.9087, lng: 116.3975 };
       const result = await sendTelegram('这是一条测试消息 🚗', 'https://example.com', testLocation);
       return new Response(JSON.stringify({ 
         success: true,
@@ -163,10 +163,9 @@ async function sendTelegram(message, confirmUrl, location) {
     let text = `🚗 *挪车请求*\n`;
     if (message) text += `\n💬 留言: ${message}`;
     
-    // 添加位置信息
+    // 添加位置信息（直接使用原始坐标，浏览器在中国返回的已经是 GCJ02）
     if (location && location.lat && location.lng) {
-      const gcj = wgs84ToGcj02(location.lat, location.lng);
-      const amapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
+      const amapUrl = `https://uri.amap.com/marker?position=${location.lng},${location.lat}&name=挪车位置`;
       text += `\n\n📍 [点击查看位置](${amapUrl})`;
     }
     
