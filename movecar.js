@@ -86,31 +86,29 @@ function generateMapUrls(lat, lng) {
 
 async function sendEmail(subject, body) {
   try {
-    const apiKey = typeof MAILGUN_API_KEY !== 'undefined' ? MAILGUN_API_KEY : '';
-    const domain = typeof MAILGUN_DOMAIN !== 'undefined' ? MAILGUN_DOMAIN : '';
     const to = typeof EMAIL_TO !== 'undefined' ? EMAIL_TO : '';
     
-    if (!apiKey || !domain || !to) {
-      console.log('Email configuration missing, skipping email notification');
+    if (!to) {
+      console.log('EMAIL_TO not configured, skipping email notification');
       return;
     }
     
-    const formData = new FormData();
-    formData.append('from', `MoveCar <noreply@${domain}>`);
-    formData.append('to', to);
-    formData.append('subject', subject);
-    formData.append('text', body);
-    
-    const response = await fetch(`https://api.mailgun.net/v3/${domain}/messages`, {
+    // 使用 MailChannels (Cloudflare Workers 专属免费邮件服务)
+    const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${btoa(`api:${apiKey}`)}`,
-      },
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: 'noreply@movecar.workers.dev', name: '挪车通知' },
+        subject: subject,
+        content: [{ type: 'text/plain', value: body }],
+      }),
     });
     
     if (!response.ok) {
-      console.error('Mailgun API error:', response.status);
+      console.error('MailChannels API error:', response.status);
+    } else {
+      console.log('Email sent successfully via MailChannels');
     }
   } catch (error) {
     console.error('Failed to send email:', error);
