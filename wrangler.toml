@@ -13,6 +13,7 @@ kv_namespaces = [
   { binding = "MOVE_CAR_STATUS", id = "YOUR_KV_NAMESPACE_ID" }
 ]
 
-# 环境变量
+# 环境变量（非敏感配置）
 [vars]
 EMAIL_TO = "your-email@example.com"
+# TG_BOT_TOKEN 和 TG_CHAT_ID 通过 wrangler secret 设置
