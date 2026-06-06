@@ -32,6 +32,29 @@ async function handleRequest(request) {
     }
   }
   
+  // 测试 Telegram 推送端点
+  if (path === '/api/test-telegram' && debugKey === 'YOUR_DEBUG_KEY') {
+    try {
+      const chatId = typeof TG_CHAT_ID !== 'undefined' ? TG_CHAT_ID : 'not set';
+      const result = await sendTelegram('这是一条测试消息 🚗', 'https://example.com');
+      return new Response(JSON.stringify({ 
+        success: true,
+        chat_id: chatId,
+        telegram_result: result
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: error.message 
+      }), { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
+  
   // 限制只允许中国大陆访问（debug 模式可跳过）
   const country = request.cf?.country;
   if (country && country !== 'CN' && debugKey !== 'YOUR_DEBUG_KEY') {
@@ -121,6 +144,48 @@ function generateMapUrls(lat, lng) {
     amapUrl: `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=位置`,
     appleUrl: `https://maps.apple.com/?ll=${gcj.lat},${gcj.lng}&q=位置`
   };
+}
+
+// Telegram Bot 推送
+async function sendTelegram(message, confirmUrl) {
+  try {
+    const token = typeof TG_BOT_TOKEN !== 'undefined' ? TG_BOT_TOKEN : '';
+    const chatId = typeof TG_CHAT_ID !== 'undefined' ? TG_CHAT_ID : '';
+    
+    if (!token || !chatId) {
+      console.log('TG_BOT_TOKEN or TG_CHAT_ID not configured, skipping telegram notification');
+      return { sent: false, reason: 'not_configured' };
+    }
+    
+    // 构建消息内容（支持 Markdown）
+    let text = `🚗 *挪车请求*\n`;
+    if (message) text += `\n💬 留言: ${message}`;
+    text += `\n\n🔗 [点击确认挪车](${confirmUrl})`;
+    
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true
+      }),
+    });
+    
+    const result = await response.json();
+    
+    if (result.ok) {
+      console.log('Telegram sent successfully');
+      return { sent: true };
+    } else {
+      console.error('Telegram error:', result.description);
+      return { sent: false, reason: 'api_error', error: result.description };
+    }
+  } catch (error) {
+    console.error('Failed to send telegram:', error);
+    return { sent: false, reason: 'exception', error: error.message };
+  }
 }
 
 // Pushplus 微信推送
@@ -323,7 +388,8 @@ async function handleNotify(request, url) {
     // 并行发送所有通知
     const promises = [
       sendPushplus('🚗 挪车请求', pushplusContent),
-      sendEmail('🚗 挪车请求', message, location, confirmUrl)
+      sendEmail('🚗 挪车请求', message, location, confirmUrl),
+      sendTelegram(message, confirmUrl)
     ];
     
     // 如果配置了 Bark，也发送 Bark 推送
@@ -341,10 +407,14 @@ async function handleNotify(request, url) {
     const emailResult = results[1];
     const emailStatus = emailResult.status === 'fulfilled' ? emailResult.value : { sent: false, reason: 'rejected' };
     
+    // 检查 Telegram 结果
+    const telegramResult = results[2];
+    const telegramStatus = telegramResult.status === 'fulfilled' ? telegramResult.value : { sent: false, reason: 'rejected' };
+    
     // 检查 Bark 结果（可选）
     let barkStatus = { sent: false, reason: 'not_configured' };
-    if (barkApiUrl && results.length > 2) {
-      const barkResult = results[2];
+    if (barkApiUrl && results.length > 3) {
+      const barkResult = results[3];
       barkStatus = barkResult.status === 'fulfilled' && barkResult.value?.ok 
         ? { sent: true } 
         : { sent: false, reason: 'failed' };
@@ -355,6 +425,7 @@ async function handleNotify(request, url) {
       notifications: {
         pushplus: pushplusStatus,
         email: emailStatus,
+        telegram: telegramStatus,
         bark: barkStatus
       }
     }), {
