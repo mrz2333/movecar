@@ -5,9 +5,12 @@ addEventListener('fetch', event => {
 const CONFIG = { KV_TTL: 3600 }
 
 async function handleRequest(request) {
-  // 限制只允许中国大陆访问
+  const url = new URL(request.url);
+  const debugKey = url.searchParams.get('debug');
+  
+  // 限制只允许中国大陆访问（debug 模式可跳过）
   const country = request.cf?.country;
-  if (country && country !== 'CN') {
+  if (country && country !== 'CN' && debugKey !== 'YOUR_DEBUG_KEY') {
     return new Response(JSON.stringify({
       error: '此服务仅限中国大陆访问',
       message: 'This service is only available in mainland China'
@@ -20,7 +23,6 @@ async function handleRequest(request) {
     });
   }
 
-  const url = new URL(request.url)
   const path = url.pathname
 
   if (path === '/api/notify' && request.method === 'POST') {
