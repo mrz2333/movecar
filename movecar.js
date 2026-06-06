@@ -7,6 +7,30 @@ const CONFIG = { KV_TTL: 3600 }
 async function handleRequest(request) {
   const url = new URL(request.url);
   const debugKey = url.searchParams.get('debug');
+  const path = url.pathname;
+  
+  // 测试邮件发送端点
+  if (path === '/api/test-email' && debugKey === 'YOUR_DEBUG_KEY') {
+    try {
+      const to = typeof EMAIL_TO !== 'undefined' ? EMAIL_TO : 'not set';
+      const result = await sendEmail('🚗 测试邮件', '这是一封测试邮件，如果您收到说明配置成功！', null, null);
+      return new Response(JSON.stringify({ 
+        success: true,
+        email_to: to,
+        mail_result: result
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: error.message 
+      }), { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
   
   // 限制只允许中国大陆访问（debug 模式可跳过）
   const country = request.cf?.country;
@@ -22,8 +46,6 @@ async function handleRequest(request) {
       }
     });
   }
-
-  const path = url.pathname
 
   if (path === '/api/notify' && request.method === 'POST') {
     return handleNotify(request, url);
@@ -99,6 +121,42 @@ function generateMapUrls(lat, lng) {
     amapUrl: `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=位置`,
     appleUrl: `https://maps.apple.com/?ll=${gcj.lat},${gcj.lng}&q=位置`
   };
+}
+
+// Pushplus 微信推送
+async function sendPushplus(title, content) {
+  try {
+    const token = typeof PUSHPLUS_TOKEN !== 'undefined' ? PUSHPLUS_TOKEN : '';
+    
+    if (!token) {
+      console.log('PUSHPLUS_TOKEN not configured, skipping pushplus notification');
+      return { sent: false, reason: 'not_configured' };
+    }
+    
+    const response = await fetch('https://www.pushplus.plus/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: token,
+        title: title,
+        content: content,
+        template: 'html'
+      }),
+    });
+    
+    const result = await response.json();
+    
+    if (result.code === 200) {
+      console.log('Pushplus sent successfully');
+      return { sent: true };
+    } else {
+      console.error('Pushplus error:', result.msg);
+      return { sent: false, reason: 'api_error', error: result.msg };
+    }
+  } catch (error) {
+    console.error('Failed to send pushplus:', error);
+    return { sent: false, reason: 'exception', error: error.message };
+  }
 }
 
 async function sendEmail(subject, message, location, confirmUrl) {
@@ -251,9 +309,20 @@ async function handleNotify(request, url) {
     if (barkUrl) {
       barkApiUrl = `${barkUrl}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${encodedConfirmUrl}`;
     }
+    
+    // 构建 Pushplus 内容
+    let pushplusContent = `<h2>🚗 挪车请求</h2>`;
+    if (message) pushplusContent += `<p>💬 留言: ${message}</p>`;
+    if (location && location.lat && location.lng) {
+      const gcj = wgs84ToGcj02(location.lat, location.lng);
+      const amapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
+      pushplusContent += `<p>📍 <a href="${amapUrl}">点击查看位置</a></p>`;
+    }
+    pushplusContent += `<p><a href="${confirmUrl}">🚀 确认挪车</a></p>`;
 
-    // 并行发送邮件和 Bark 推送（邮件为主要通知方式）
+    // 并行发送所有通知
     const promises = [
+      sendPushplus('🚗 挪车请求', pushplusContent),
       sendEmail('🚗 挪车请求', message, location, confirmUrl)
     ];
     
@@ -264,14 +333,18 @@ async function handleNotify(request, url) {
     
     const results = await Promise.allSettled(promises);
     
-    // 检查邮件结果（主要通知方式）
-    const emailResult = results[0];
+    // 检查 Pushplus 结果
+    const pushplusResult = results[0];
+    const pushplusStatus = pushplusResult.status === 'fulfilled' ? pushplusResult.value : { sent: false, reason: 'rejected' };
+    
+    // 检查邮件结果
+    const emailResult = results[1];
     const emailStatus = emailResult.status === 'fulfilled' ? emailResult.value : { sent: false, reason: 'rejected' };
     
     // 检查 Bark 结果（可选）
     let barkStatus = { sent: false, reason: 'not_configured' };
-    if (barkApiUrl && results.length > 1) {
-      const barkResult = results[1];
+    if (barkApiUrl && results.length > 2) {
+      const barkResult = results[2];
       barkStatus = barkResult.status === 'fulfilled' && barkResult.value?.ok 
         ? { sent: true } 
         : { sent: false, reason: 'failed' };
@@ -280,6 +353,7 @@ async function handleNotify(request, url) {
     return new Response(JSON.stringify({ 
       success: true,
       notifications: {
+        pushplus: pushplusStatus,
         email: emailStatus,
         bark: barkStatus
       }
