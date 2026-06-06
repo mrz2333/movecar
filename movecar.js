@@ -84,41 +84,81 @@ function generateMapUrls(lat, lng) {
   };
 }
 
-async function sendEmail(subject, body, mapUrl) {
+async function sendEmail(subject, message, location, confirmUrl) {
   try {
     const to = typeof EMAIL_TO !== 'undefined' ? EMAIL_TO : '';
     
     if (!to) {
       console.log('EMAIL_TO not configured, skipping email notification');
-      return;
+      return { sent: false, reason: 'not_configured' };
     }
     
-    // 构建邮件正文
-    let emailText = body.replace(/\\n/g, '\n');
-    if (mapUrl) {
-      emailText += `\n\n📍 点击查看位置: ${mapUrl}`;
+    // 解析留言内容
+    const textBody = message.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n');
+    
+    // 构建位置信息
+    let locationHtml = '';
+    let locationText = '';
+    if (location && location.lat && location.lng) {
+      const gcj = wgs84ToGcj02(location.lat, location.lng);
+      const amapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
+      locationHtml = `
+        <div style="margin: 20px 0; padding: 16px; background: #f0f9ff; border-radius: 12px; border-left: 4px solid #0093E9;">
+          <p style="margin: 0 0 10px; font-weight: 600; color: #1a202c;">📍 对方位置</p>
+          <a href="${amapUrl}" style="display: inline-block; padding: 10px 20px; background: #0093E9; color: white; text-decoration: none; border-radius: 8px; font-weight: 500;">🗺️ 打开地图查看</a>
+        </div>`;
+      locationText = `\n\n📍 位置: ${amapUrl}`;
     }
+    
+    // 构建 HTML 邮件
+    const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      <div style="max-width: 500px; margin: 20px auto; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
+        <div style="background: linear-gradient(135deg, #0093E9 0%, #80D0C7 100%); padding: 30px; text-align: center;">
+          <div style="font-size: 48px; margin-bottom: 10px;">🚗</div>
+          <h1 style="margin: 0; color: white; font-size: 24px;">挪车请求</h1>
+          <p style="margin: 8px 0 0; color: rgba(255,255,255,0.9); font-size: 14px;">有人需要您挪车</p>
+        </div>
+        <div style="padding: 24px;">
+          <div style="padding: 16px; background: #f7fafc; border-radius: 12px; margin-bottom: 16px;">
+            <p style="margin: 0; color: #4a5568; font-size: 15px; line-height: 1.6;">💬 ${textBody}</p>
+          </div>
+          ${locationHtml}
+          <a href="${confirmUrl || '#'}" style="display: block; text-align: center; padding: 14px; background: linear-gradient(135deg, #0093E9 0%, #80D0C7 100%); color: white; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 16px;">🚀 确认挪车</a>
+          <p style="margin: 16px 0 0; text-align: center; color: #a0aec0; font-size: 12px;">此邮件由挪车通知系统自动发送</p>
+        </div>
+      </div>
+    </body>
+    </html>`;
     
     // 使用 MailChannels (Cloudflare Workers 专属免费邮件服务)
-    const fromEmail = typeof EMAIL_FROM !== 'undefined' ? EMAIL_FROM : 'noreply@movecar.workers.dev';
     const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         personalizations: [{ to: [{ email: to }] }],
-        from: { email: fromEmail, name: '挪车通知' },
+        from: { email: 'noreply@movecar.workers.dev', name: '挪车通知' },
         subject: subject,
-        content: [{ type: 'text/plain', value: emailText }],
+        content: [
+          { type: 'text/html', value: htmlContent },
+          { type: 'text/plain', value: `🚗 挪车请求\n\n${textBody}${locationText}` }
+        ],
       }),
     });
     
     if (!response.ok) {
       console.error('MailChannels API error:', response.status);
-    } else {
-      console.log('Email sent successfully via MailChannels');
+      return { sent: false, reason: 'api_error', status: response.status };
     }
+    
+    console.log('Email sent successfully via MailChannels');
+    return { sent: true };
   } catch (error) {
     console.error('Failed to send email:', error);
+    return { sent: false, reason: 'exception', error: error.message };
   }
 }
 
@@ -129,7 +169,29 @@ async function handleNotify(request, url) {
     const location = body.location || null;
     const delayed = body.delayed || false;
 
-    const confirmUrl = encodeURIComponent(url.origin + '/owner-confirm');
+    // 防骚扰频率限制：检查上次请求时间
+    const lastNotify = await MOVE_CAR_STATUS.get('last_notify_time');
+    const now = Date.now();
+    if (lastNotify) {
+      const elapsed = now - parseInt(lastNotify);
+      const cooldown = 60000; // 60秒冷却时间
+      if (elapsed < cooldown) {
+        const remainSeconds = Math.ceil((cooldown - elapsed) / 1000);
+        return new Response(JSON.stringify({ 
+          success: false, 
+          error: `请等待 ${remainSeconds} 秒后再试`,
+          cooldown: remainSeconds
+        }), { 
+          status: 429,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+    
+    // 记录本次请求时间
+    await MOVE_CAR_STATUS.put('last_notify_time', now.toString(), { expirationTtl: 120 });
+
+    const confirmUrl = url.origin + '/owner-confirm';
 
     let notifyBody = '🚗 挪车请求';
     if (message) notifyBody += `\\n💬 留言: ${message}`;
@@ -154,27 +216,30 @@ async function handleNotify(request, url) {
       await new Promise(resolve => setTimeout(resolve, 30000));
     }
 
-    const barkApiUrl = `${BARK_URL}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${confirmUrl}`;
-
-    // 获取地图链接（如果有位置信息）
-    let mapUrl = '';
-    if (location && location.lat && location.lng) {
-      const gcj = wgs84ToGcj02(location.lat, location.lng);
-      mapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
-    }
+    const encodedConfirmUrl = encodeURIComponent(confirmUrl);
+    const barkApiUrl = `${BARK_URL}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${encodedConfirmUrl}`;
 
     // 并行发送 Bark 推送和邮件通知（互不阻塞）
     const [barkResult, emailResult] = await Promise.allSettled([
       fetch(barkApiUrl),
-      sendEmail('🚗 挪车请求', notifyBody, mapUrl)
+      sendEmail('🚗 挪车请求', message, location, confirmUrl)
     ]);
 
     // 检查 Bark 结果（Bark 是主要通知方式，失败则报错）
-    if (barkResult.status === 'rejected' || !barkResult.value?.ok) {
+    const barkOk = barkResult.status === 'fulfilled' && barkResult.value?.ok;
+    const emailStatus = emailResult.status === 'fulfilled' ? emailResult.value : { sent: false, reason: 'rejected' };
+
+    if (!barkOk) {
       throw new Error('Bark API Error');
     }
 
-    return new Response(JSON.stringify({ success: true }), {
+    return new Response(JSON.stringify({ 
+      success: true,
+      notifications: {
+        bark: { sent: true },
+        email: emailStatus
+      }
+    }), {
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
