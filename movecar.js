@@ -84,6 +84,39 @@ function generateMapUrls(lat, lng) {
   };
 }
 
+async function sendEmail(subject, body) {
+  try {
+    const apiKey = typeof MAILGUN_API_KEY !== 'undefined' ? MAILGUN_API_KEY : '';
+    const domain = typeof MAILGUN_DOMAIN !== 'undefined' ? MAILGUN_DOMAIN : '';
+    const to = typeof EMAIL_TO !== 'undefined' ? EMAIL_TO : '';
+    
+    if (!apiKey || !domain || !to) {
+      console.log('Email configuration missing, skipping email notification');
+      return;
+    }
+    
+    const formData = new FormData();
+    formData.append('from', `MoveCar <noreply@${domain}>`);
+    formData.append('to', to);
+    formData.append('subject', subject);
+    formData.append('text', body);
+    
+    const response = await fetch(`https://api.mailgun.net/v3/${domain}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${btoa(`api:${apiKey}`)}`,
+      },
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      console.error('Mailgun API error:', response.status);
+    }
+  } catch (error) {
+    console.error('Failed to send email:', error);
+  }
+}
+
 async function handleNotify(request, url) {
   try {
     const body = await request.json();
@@ -120,6 +153,11 @@ async function handleNotify(request, url) {
 
     const barkResponse = await fetch(barkApiUrl);
     if (!barkResponse.ok) throw new Error('Bark API Error');
+
+    // Send email notification
+    const emailSubject = '挪车请求';
+    const emailBody = notifyBody.replace(/\\\\n/g, '\\n');
+    await sendEmail(emailSubject, emailBody);
 
     return new Response(JSON.stringify({ success: true }), {
       headers: { 'Content-Type': 'application/json' }
