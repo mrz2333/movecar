@@ -84,7 +84,7 @@ function generateMapUrls(lat, lng) {
   };
 }
 
-async function sendEmail(subject, body) {
+async function sendEmail(subject, body, mapUrl) {
   try {
     const to = typeof EMAIL_TO !== 'undefined' ? EMAIL_TO : '';
     
@@ -93,15 +93,22 @@ async function sendEmail(subject, body) {
       return;
     }
     
+    // 构建邮件正文
+    let emailText = body.replace(/\\n/g, '\n');
+    if (mapUrl) {
+      emailText += `\n\n📍 点击查看位置: ${mapUrl}`;
+    }
+    
     // 使用 MailChannels (Cloudflare Workers 专属免费邮件服务)
+    const fromEmail = typeof EMAIL_FROM !== 'undefined' ? EMAIL_FROM : 'noreply@movecar.workers.dev';
     const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         personalizations: [{ to: [{ email: to }] }],
-        from: { email: 'noreply@movecar.workers.dev', name: '挪车通知' },
+        from: { email: fromEmail, name: '挪车通知' },
         subject: subject,
-        content: [{ type: 'text/plain', value: body }],
+        content: [{ type: 'text/plain', value: emailText }],
       }),
     });
     
@@ -149,13 +156,23 @@ async function handleNotify(request, url) {
 
     const barkApiUrl = `${BARK_URL}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${confirmUrl}`;
 
-    const barkResponse = await fetch(barkApiUrl);
-    if (!barkResponse.ok) throw new Error('Bark API Error');
+    // 获取地图链接（如果有位置信息）
+    let mapUrl = '';
+    if (location && location.lat && location.lng) {
+      const gcj = wgs84ToGcj02(location.lat, location.lng);
+      mapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
+    }
 
-    // Send email notification
-    const emailSubject = '挪车请求';
-    const emailBody = notifyBody.replace(/\\\\n/g, '\\n');
-    await sendEmail(emailSubject, emailBody);
+    // 并行发送 Bark 推送和邮件通知（互不阻塞）
+    const [barkResult, emailResult] = await Promise.allSettled([
+      fetch(barkApiUrl),
+      sendEmail('🚗 挪车请求', notifyBody, mapUrl)
+    ]);
+
+    // 检查 Bark 结果（Bark 是主要通知方式，失败则报错）
+    if (barkResult.status === 'rejected' || !barkResult.value?.ok) {
+      throw new Error('Bark API Error');
+    }
 
     return new Response(JSON.stringify({ success: true }), {
       headers: { 'Content-Type': 'application/json' }
