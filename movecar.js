@@ -5,6 +5,21 @@ addEventListener('fetch', event => {
 const CONFIG = { KV_TTL: 3600 }
 
 async function handleRequest(request) {
+  // 限制只允许中国大陆访问
+  const country = request.cf?.country;
+  if (country && country !== 'CN') {
+    return new Response(JSON.stringify({
+      error: '此服务仅限中国大陆访问',
+      message: 'This service is only available in mainland China'
+    }), {
+      status: 403,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Robots-Tag': 'noindex'
+      }
+    });
+  }
+
   const url = new URL(request.url)
   const path = url.pathname
 
