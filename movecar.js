@@ -36,7 +36,9 @@ async function handleRequest(request) {
   if (path === '/api/test-telegram' && debugKey === 'YOUR_DEBUG_KEY') {
     try {
       const chatId = typeof TG_CHAT_ID !== 'undefined' ? TG_CHAT_ID : 'not set';
-      const result = await sendTelegram('这是一条测试消息 🚗', 'https://example.com');
+      // 测试位置（北京天安门）
+      const testLocation = { lat: 39.9042, lng: 116.4074 };
+      const result = await sendTelegram('这是一条测试消息 🚗', 'https://example.com', testLocation);
       return new Response(JSON.stringify({ 
         success: true,
         chat_id: chatId,
@@ -147,7 +149,7 @@ function generateMapUrls(lat, lng) {
 }
 
 // Telegram Bot 推送
-async function sendTelegram(message, confirmUrl) {
+async function sendTelegram(message, confirmUrl, location) {
   try {
     const token = typeof TG_BOT_TOKEN !== 'undefined' ? TG_BOT_TOKEN : '';
     const chatId = typeof TG_CHAT_ID !== 'undefined' ? TG_CHAT_ID : '';
@@ -160,6 +162,14 @@ async function sendTelegram(message, confirmUrl) {
     // 构建消息内容（支持 Markdown）
     let text = `🚗 *挪车请求*\n`;
     if (message) text += `\n💬 留言: ${message}`;
+    
+    // 添加位置信息
+    if (location && location.lat && location.lng) {
+      const gcj = wgs84ToGcj02(location.lat, location.lng);
+      const amapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
+      text += `\n\n📍 [点击查看位置](${amapUrl})`;
+    }
+    
     text += `\n\n🔗 [点击确认挪车](${confirmUrl})`;
     
     const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -389,7 +399,7 @@ async function handleNotify(request, url) {
     const promises = [
       sendPushplus('🚗 挪车请求', pushplusContent),
       sendEmail('🚗 挪车请求', message, location, confirmUrl),
-      sendTelegram(message, confirmUrl)
+      sendTelegram(message, confirmUrl, location)
     ];
     
     // 如果配置了 Bark，也发送 Bark 推送
