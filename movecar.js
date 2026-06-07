@@ -4,6 +4,29 @@ addEventListener('fetch', event => {
 
 const CONFIG = {
   KV_TTL: 3600,
+  COOLDOWN_MS: 60000,
+}
+
+function randomToken(bytes = 16) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function createRequestId() {
+  return `mc_${Date.now().toString(36)}_${randomToken(4)}`;
+}
+
+function requestKey(requestId, name) {
+  return `request:${requestId}:${name}`;
+}
+
+function isValidRequestId(requestId) {
+  return typeof requestId === 'string' && /^mc_[a-z0-9]+_[a-f0-9]{8}$/.test(requestId);
+}
+
+function jsonError(message, status = 400, extra = {}) {
+  return jsonResponse({ success: false, error: message, ...extra }, { status });
 }
 
 function jsonResponse(data, init = {}) {
@@ -108,7 +131,7 @@ async function handleRequest(request) {
   }
 
   if (path === '/api/get-location') {
-    return handleGetLocation();
+    return handleGetLocation(url);
   }
 
   if (path === '/api/owner-confirm' && request.method === 'POST') {
@@ -116,18 +139,15 @@ async function handleRequest(request) {
   }
 
   if (path === '/api/check-status') {
-    const status = await MOVE_CAR_STATUS.get('notify_status');
-    const ownerLocation = await MOVE_CAR_STATUS.get('owner_location');
-    return new Response(JSON.stringify({
-      status: status || 'waiting',
-      ownerLocation: ownerLocation ? JSON.parse(ownerLocation) : null
-    }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    return handleCheckStatus(url);
+  }
+
+  if (path === '/api/complete' && request.method === 'POST') {
+    return handleCompleteAction(request);
   }
 
   if (path === '/owner-confirm') {
-    return renderOwnerPage();
+    return renderOwnerPage(url);
   }
 
   return renderMainPage(url.origin);
@@ -370,61 +390,64 @@ async function handleNotify(request, url) {
       ? { lat: Number(body.location.lat), lng: Number(body.location.lng) }
       : null;
     const delayed = body.delayed || false;
-
-    // 防骚扰频率限制：检查上次请求时间
-    const lastNotify = await MOVE_CAR_STATUS.get('last_notify_time');
     const now = Date.now();
+    const clientId = String(body.clientId || '').slice(0, 80).replace(/[^a-zA-Z0-9_-]/g, '') || 'anonymous';
+    const cooldownKey = `cooldown:${clientId}`;
+
+    // 防骚扰频率限制：按客户端隔离，避免全局误伤其他扫码用户
+    const lastNotify = await MOVE_CAR_STATUS.get(cooldownKey);
     if (lastNotify) {
       const elapsed = now - parseInt(lastNotify);
-      const cooldown = 60000; // 60秒冷却时间
-      if (elapsed < cooldown) {
-        const remainSeconds = Math.ceil((cooldown - elapsed) / 1000);
-        return new Response(JSON.stringify({ 
-          success: false, 
-          error: `请等待 ${remainSeconds} 秒后再试`,
-          cooldown: remainSeconds
-        }), { 
-          status: 429,
-          headers: { 'Content-Type': 'application/json' }
-        });
+      if (elapsed < CONFIG.COOLDOWN_MS) {
+        const remainSeconds = Math.ceil((CONFIG.COOLDOWN_MS - elapsed) / 1000);
+        return jsonError(`请等待 ${remainSeconds} 秒后再试`, 429, { cooldown: remainSeconds });
       }
     }
-    
-    // 记录本次请求时间
-    await MOVE_CAR_STATUS.put('last_notify_time', now.toString(), { expirationTtl: 120 });
+    await MOVE_CAR_STATUS.put(cooldownKey, now.toString(), { expirationTtl: 120 });
 
-    const confirmUrl = url.origin + '/owner-confirm';
+    const requestId = createRequestId();
+    const token = randomToken(16);
+    const confirmUrl = `${url.origin}/owner-confirm?id=${encodeURIComponent(requestId)}&token=${encodeURIComponent(token)}`;
+    const publicRequestNo = requestId.slice(-4).toUpperCase();
 
-    let notifyBody = '🚗 挪车请求';
+    let notifyBody = `🚗 挪车请求 #${publicRequestNo}`;
     if (message) notifyBody += `\\n💬 留言: ${message}`;
 
-    if (location && location.lat && location.lng) {
+    const requestData = {
+      requestId,
+      token,
+      message,
+      delayed,
+      createdAt: now,
+      status: 'waiting',
+      location: null,
+      notifications: null,
+      eta: null,
+      completedAt: null
+    };
+
+    if (location) {
       const urls = generateMapUrls(location.lat, location.lng);
       notifyBody += '\\n📍 已附带位置信息，点击查看';
-
-      await MOVE_CAR_STATUS.put('requester_location', JSON.stringify({
+      requestData.location = {
         lat: location.lat,
         lng: location.lng,
         ...urls
-      }), { expirationTtl: CONFIG.KV_TTL });
+      };
     } else {
       notifyBody += '\\n⚠️ 未提供位置信息';
     }
 
-    await MOVE_CAR_STATUS.put('notify_status', 'waiting', { expirationTtl: 600 });
+    await MOVE_CAR_STATUS.put(requestKey(requestId, 'data'), JSON.stringify(requestData), { expirationTtl: CONFIG.KV_TTL });
 
-    // 无位置时由前端延迟 30 秒后再调用接口，避免 Worker 长时间挂起
     const encodedConfirmUrl = encodeURIComponent(confirmUrl);
-    
-    // 构建 Bark URL（如果配置了的话）
     const barkUrl = typeof BARK_URL !== 'undefined' ? BARK_URL : '';
     let barkApiUrl = '';
     if (barkUrl) {
       barkApiUrl = `${barkUrl}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${encodedConfirmUrl}`;
     }
-    
-    // 构建 Pushplus 内容
-    let pushplusContent = `<h2>🚗 挪车请求</h2>`;
+
+    let pushplusContent = `<h2>🚗 挪车请求 #${publicRequestNo}</h2>`;
     if (message) pushplusContent += `<p>💬 留言: ${escapeHtml(message)}</p>`;
     if (location) {
       const gcj = wgs84ToGcj02(location.lat, location.lng);
@@ -433,91 +456,138 @@ async function handleNotify(request, url) {
     }
     pushplusContent += `<p><a href="${confirmUrl}">🚀 确认挪车</a></p>`;
 
-    // 并行发送所有通知
     const promises = [
       sendPushplus('🚗 挪车请求', pushplusContent),
       sendEmail('🚗 挪车请求', message, location, confirmUrl),
       sendTelegram(message, confirmUrl, location)
     ];
-    
-    // 如果配置了 Bark，也发送 Bark 推送
+
     if (barkApiUrl) {
       promises.push(fetch(barkApiUrl));
     }
-    
+
     const results = await Promise.allSettled(promises);
-    
-    // 检查 Pushplus 结果
     const pushplusResult = results[0];
     const pushplusStatus = pushplusResult.status === 'fulfilled' ? pushplusResult.value : { sent: false, reason: 'rejected' };
-    
-    // 检查邮件结果
     const emailResult = results[1];
     const emailStatus = emailResult.status === 'fulfilled' ? emailResult.value : { sent: false, reason: 'rejected' };
-    
-    // 检查 Telegram 结果
     const telegramResult = results[2];
     const telegramStatus = telegramResult.status === 'fulfilled' ? telegramResult.value : { sent: false, reason: 'rejected' };
-    
-    // 检查 Bark 结果（可选）
+
     let barkStatus = { sent: false, reason: 'not_configured' };
     if (barkApiUrl && results.length > 3) {
       const barkResult = results[3];
-      barkStatus = barkResult.status === 'fulfilled' && barkResult.value?.ok 
-        ? { sent: true } 
+      barkStatus = barkResult.status === 'fulfilled' && barkResult.value?.ok
+        ? { sent: true }
         : { sent: false, reason: 'failed' };
     }
 
-    return new Response(JSON.stringify({ 
+    const notifications = {
+      pushplus: pushplusStatus,
+      email: emailStatus,
+      telegram: telegramStatus,
+      bark: barkStatus
+    };
+    requestData.notifications = notifications;
+    await MOVE_CAR_STATUS.put(requestKey(requestId, 'data'), JSON.stringify(requestData), { expirationTtl: CONFIG.KV_TTL });
+
+    return jsonResponse({
       success: true,
-      notifications: {
-        pushplus: pushplusStatus,
-        email: emailStatus,
-        telegram: telegramStatus,
-        bark: barkStatus
-      }
-    }), {
-      headers: { 'Content-Type': 'application/json' }
+      requestId,
+      requestNo: publicRequestNo,
+      notifications
     });
   } catch (error) {
-    return new Response(JSON.stringify({ success: false, error: error.message }), { status: 500 });
+    return jsonError(error.message || '发送失败', 500);
   }
 }
 
-async function handleGetLocation() {
-  const data = await MOVE_CAR_STATUS.get('requester_location');
-  if (data) {
-    return new Response(data, { headers: { 'Content-Type': 'application/json' } });
+async function getRequestData(requestId) {
+  if (!isValidRequestId(requestId)) return null;
+  const data = await MOVE_CAR_STATUS.get(requestKey(requestId, 'data'));
+  return data ? JSON.parse(data) : null;
+}
+
+async function saveRequestData(requestId, data) {
+  await MOVE_CAR_STATUS.put(requestKey(requestId, 'data'), JSON.stringify(data), { expirationTtl: CONFIG.KV_TTL });
+}
+
+async function handleGetLocation(url) {
+  const requestId = url.searchParams.get('id');
+  const data = await getRequestData(requestId);
+  if (data?.location) {
+    return jsonResponse(data.location);
   }
-  return new Response(JSON.stringify({ error: 'No location' }), { status: 404 });
+  return jsonError('No location', 404);
+}
+
+async function handleCheckStatus(url) {
+  const requestId = url.searchParams.get('id');
+  const data = await getRequestData(requestId);
+  if (!data) {
+    return jsonError('请求不存在或已过期', 404);
+  }
+  return jsonResponse({
+    success: true,
+    requestId,
+    requestNo: requestId.slice(-4).toUpperCase(),
+    status: data.status || 'waiting',
+    eta: data.eta || null,
+    completedAt: data.completedAt || null,
+    notifications: data.notifications || null,
+    ownerLocation: data.ownerLocation || null
+  });
 }
 
 async function handleOwnerConfirmAction(request) {
   try {
     const body = await request.json();
+    const requestId = body.requestId;
+    const token = body.token;
+    const data = await getRequestData(requestId);
+    if (!data) return jsonError('请求不存在或已过期', 404);
+    if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+
     const ownerLocation = isValidLocation(body.location)
       ? { lat: Number(body.location.lat), lng: Number(body.location.lng) }
       : null;
+    const eta = ['马上到', '约3分钟', '约5分钟'].includes(body.eta) ? body.eta : '正在前往';
 
     if (ownerLocation) {
       const urls = generateMapUrls(ownerLocation.lat, ownerLocation.lng);
-      await MOVE_CAR_STATUS.put('owner_location', JSON.stringify({
+      data.ownerLocation = {
         lat: ownerLocation.lat,
         lng: ownerLocation.lng,
         ...urls,
         timestamp: Date.now()
-      }), { expirationTtl: CONFIG.KV_TTL });
+      };
     }
 
-    await MOVE_CAR_STATUS.put('notify_status', 'confirmed', { expirationTtl: 600 });
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    data.status = 'confirmed';
+    data.eta = eta;
+    data.confirmedAt = Date.now();
+    await saveRequestData(requestId, data);
+    return jsonResponse({ success: true, status: data.status, eta: data.eta });
   } catch (error) {
-    await MOVE_CAR_STATUS.put('notify_status', 'confirmed', { expirationTtl: 600 });
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    return jsonError(error.message || '确认失败', 500);
+  }
+}
+
+async function handleCompleteAction(request) {
+  try {
+    const body = await request.json();
+    const requestId = body.requestId;
+    const token = body.token;
+    const data = await getRequestData(requestId);
+    if (!data) return jsonError('请求不存在或已过期', 404);
+    if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+
+    data.status = 'completed';
+    data.completedAt = Date.now();
+    await saveRequestData(requestId, data);
+    return jsonResponse({ success: true, status: data.status });
+  } catch (error) {
+    return jsonError(error.message || '完成失败', 500);
   }
 }
 
@@ -694,6 +764,42 @@ function renderMainPage(origin) {
         cursor: pointer;
         margin-left: 8px;
         font-weight: 600;
+      }
+      .char-count {
+        text-align: right;
+        color: #94a3b8;
+        font-size: 12px;
+        padding: 0 clamp(16px, 4vw, 24px) 10px;
+      }
+      .notify-status {
+        margin-top: 16px;
+        display: grid;
+        gap: 8px;
+        text-align: left;
+      }
+      .status-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        background: rgba(255,255,255,0.6);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 14px;
+        color: #155724;
+      }
+      .countdown-line {
+        font-size: 13px;
+        color: #0f766e;
+        margin-top: 8px;
+      }
+      .btn-cancel {
+        margin-top: 8px;
+        border: none;
+        background: transparent;
+        color: #0f766e;
+        font-weight: 700;
+        cursor: pointer;
       }
       .loc-refresh {
         font-size: clamp(20px, 5vw, 26px);
@@ -995,9 +1101,10 @@ function renderMainPage(origin) {
       <div class="modal-box">
         <div class="modal-icon">📍</div>
         <div class="modal-title">位置信息说明</div>
-        <div class="modal-desc">分享位置可让车主确认您在车旁<br>不分享将延迟30秒发送通知</div>
+        <div class="modal-desc">分享位置可让车主确认您在车旁<br>不分享也能通知，但会等待30秒防骚扰</div>
         <div class="modal-buttons">
-          <button class="modal-btn modal-btn-primary" onclick="hideModal('locationTipModal');requestLocation()">我知道了</button>
+          <button class="modal-btn modal-btn-secondary" onclick="skipLocation()">不分享位置</button>
+          <button class="modal-btn modal-btn-primary" onclick="hideModal('locationTipModal');requestLocation()">分享位置</button>
         </div>
       </div>
     </div>
@@ -1010,7 +1117,8 @@ function renderMainPage(origin) {
       </div>
 
       <div class="card input-card">
-        <textarea id="msgInput" placeholder="输入留言给车主...（可选）"></textarea>
+        <textarea id="msgInput" maxlength="200" placeholder="输入留言给车主...（可选）" oninput="updateCharCount()"></textarea>
+        <div id="charCount" class="char-count">0/200</div>
         <div class="tags">
           <div class="tag" onclick="addTag('您的车挡住我了')">🚧 挡路</div>
           <div class="tag" onclick="addTag('临时停靠一下')">⏱️ 临停</div>
@@ -1019,7 +1127,7 @@ function renderMainPage(origin) {
         </div>
       </div>
 
-      <div class="card loc-card">
+      <div class="card loc-card" onclick="requestLocation()">
         <div id="locIcon" class="loc-icon loading">📍</div>
         <div class="loc-content">
           <div class="loc-title">我的位置</div>
@@ -1037,7 +1145,9 @@ function renderMainPage(origin) {
       <div class="card success-card">
         <span class="success-icon">✅</span>
         <h2>通知已发送！</h2>
+        <p id="requestNoText">请求已创建</p>
         <p id="waitingText" class="loading-text">正在等待车主回应...</p>
+        <div id="notifyStatus" class="notify-status"></div>
       </div>
 
       <div id="ownerFeedback" class="card owner-card hidden">
@@ -1066,11 +1176,25 @@ function renderMainPage(origin) {
     <script>
       let userLocation = null;
       let checkTimer = null;
+      let activeRequestId = null;
+      let activeCountdown = null;
+      const clientId = getClientId();
 
-      // 页面加载时显示提示弹窗
       window.onload = () => {
+        updateCharCount();
+        updateNotifyButton();
         showModal('locationTipModal');
       };
+
+      function getClientId() {
+        const key = 'movecar_client_id';
+        let id = localStorage.getItem(key);
+        if (!id) {
+          id = 'client_' + Date.now().toString(36) + '_' + Math.random().toString(16).slice(2, 10);
+          localStorage.setItem(key, id);
+        }
+        return id;
+      }
 
       function showModal(id) {
         document.getElementById(id).classList.add('show');
@@ -1080,8 +1204,19 @@ function renderMainPage(origin) {
         document.getElementById(id).classList.remove('show');
       }
 
-      // 用户点击"我知道了"后请求位置
+      function skipLocation() {
+        hideModal('locationTipModal');
+        userLocation = null;
+        const icon = document.getElementById('locIcon');
+        const txt = document.getElementById('locStatus');
+        icon.className = 'loc-icon error';
+        txt.className = 'loc-status';
+        txt.innerText = '未分享位置，发送前会等待30秒；点此可重新获取';
+        updateNotifyButton();
+      }
+
       function requestLocation() {
+        hideModal('locationTipModal');
         const icon = document.getElementById('locIcon');
         const txt = document.getElementById('locStatus');
 
@@ -1095,75 +1230,145 @@ function renderMainPage(origin) {
               userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
               icon.className = 'loc-icon success';
               txt.className = 'loc-status success';
-              txt.innerText = '已获取位置 ✓';
+              txt.innerText = '已获取位置 ✓，将立即通知车主';
+              updateNotifyButton();
             },
-            (err) => {
+            () => {
+              userLocation = null;
               icon.className = 'loc-icon error';
               txt.className = 'loc-status error';
-              txt.innerText = '位置获取失败，刷新页面可重试';
+              txt.innerText = '位置获取失败，点此可重试；不分享也可通知';
+              updateNotifyButton();
             },
             { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
           );
         } else {
+          userLocation = null;
           icon.className = 'loc-icon error';
           txt.className = 'loc-status error';
-          txt.innerText = '浏览器不支持定位';
+          txt.innerText = '浏览器不支持定位，将等待30秒后通知';
+          updateNotifyButton();
         }
       }
 
       function addTag(text) {
         document.getElementById('msgInput').value = text;
+        updateCharCount();
       }
 
-      // 发送通知
+      function updateCharCount() {
+        const input = document.getElementById('msgInput');
+        document.getElementById('charCount').innerText = input.value.length + '/200';
+      }
+
+      function updateNotifyButton() {
+        const btn = document.getElementById('notifyBtn');
+        if (!btn.disabled) {
+          btn.innerHTML = userLocation
+            ? '<span>📍</span><span>立即通知车主</span>'
+            : '<span>⏳</span><span>30秒后通知车主</span>';
+        }
+      }
+
+      function delayWithCountdown(seconds, btn) {
+        return new Promise((resolve, reject) => {
+          let left = seconds;
+          const original = btn.innerHTML;
+          const line = document.createElement('div');
+          line.className = 'countdown-line';
+          line.id = 'countdownLine';
+          line.innerHTML = '未分享位置，<b>' + left + '</b> 秒后发送';
+          const cancel = document.createElement('button');
+          cancel.className = 'btn-cancel';
+          cancel.innerText = '取消发送';
+          cancel.onclick = () => {
+            clearInterval(activeCountdown);
+            line.remove();
+            cancel.remove();
+            btn.innerHTML = original;
+            reject(new Error('已取消发送'));
+          };
+          btn.insertAdjacentElement('afterend', line);
+          line.insertAdjacentElement('afterend', cancel);
+          activeCountdown = setInterval(() => {
+            left--;
+            line.innerHTML = '未分享位置，<b>' + left + '</b> 秒后发送';
+            btn.innerHTML = '<span>⏳</span><span>等待 ' + left + ' 秒...</span>';
+            if (left <= 0) {
+              clearInterval(activeCountdown);
+              line.remove();
+              cancel.remove();
+              resolve();
+            }
+          }, 1000);
+        });
+      }
+
       async function sendNotify() {
         const btn = document.getElementById('notifyBtn');
-        const msg = document.getElementById('msgInput').value;
-        const delayed = !userLocation; // 无位置则延迟
+        const msg = document.getElementById('msgInput').value.slice(0, 200);
+        const delayed = !userLocation;
 
         btn.disabled = true;
-        btn.innerHTML = '<span>🚀</span><span>发送中...</span>';
+        btn.innerHTML = '<span>🚀</span><span>准备发送...</span>';
 
         try {
           if (delayed) {
-            showToast('⏳ 未获取位置，30 秒后发送通知');
-            btn.innerHTML = '<span>⏳</span><span>等待 30 秒...</span>';
-            await new Promise(resolve => setTimeout(resolve, 30000));
+            showToast('⏳ 未分享位置，30 秒后发送通知');
+            await delayWithCountdown(30, btn);
           }
 
+          btn.innerHTML = '<span>🚀</span><span>正在通知车主...</span>';
           const res = await fetch('/api/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: msg, location: userLocation, delayed: delayed })
+            body: JSON.stringify({ message: msg, location: userLocation, delayed, clientId })
           });
 
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
+            activeRequestId = data.requestId;
             showToast('✅ 发送成功！');
+            document.getElementById('requestNoText').innerText = data.requestNo ? '请求编号 #' + data.requestNo : '请求已创建';
+            renderNotificationStatus(data.notifications);
             document.getElementById('mainView').style.display = 'none';
             document.getElementById('successView').style.display = 'flex';
-            startPolling();
+            startPolling(activeRequestId);
           } else {
             throw new Error(data.error || 'API Error');
           }
         } catch (e) {
           showToast('❌ ' + (e.message || '发送失败，请重试'));
           btn.disabled = false;
-          btn.innerHTML = '<span>🔔</span><span>一键通知车主</span>';
+          updateNotifyButton();
         }
       }
 
-      function startPolling() {
+      function renderNotificationStatus(notifications) {
+        const box = document.getElementById('notifyStatus');
+        if (!box || !notifications) return;
+        const labels = { telegram: 'Telegram', email: '邮件', pushplus: 'Pushplus', bark: 'Bark' };
+        box.innerHTML = Object.keys(labels).map(key => {
+          const item = notifications[key] || {};
+          const text = item.sent ? '✅ 已发送' : (item.reason === 'not_configured' ? '⚪ 未配置' : '⚠️ 失败');
+          return '<div class="status-row"><span>' + labels[key] + '</span><b>' + text + '</b></div>';
+        }).join('');
+      }
+
+      function startPolling(requestId) {
         let count = 0;
         checkTimer = setInterval(async () => {
           count++;
           if (count > 120) { clearInterval(checkTimer); return; }
           try {
-            const res = await fetch('/api/check-status');
+            const res = await fetch('/api/check-status?id=' + encodeURIComponent(requestId));
             const data = await res.json();
-            if (data.status === 'confirmed') {
+            if (data.status === 'confirmed' || data.status === 'completed') {
               const fb = document.getElementById('ownerFeedback');
               fb.classList.remove('hidden');
+              document.getElementById('waitingText').innerText = data.status === 'completed'
+                ? '车主已处理完成 ✅'
+                : '车主已确认，' + (data.eta || '正在前往') + '...';
 
               if (data.ownerLocation && data.ownerLocation.amapUrl) {
                 document.getElementById('ownerMapLinks').style.display = 'flex';
@@ -1171,8 +1376,8 @@ function renderMainPage(origin) {
                 document.getElementById('ownerAppleLink').href = data.ownerLocation.appleUrl;
               }
 
-              clearInterval(checkTimer);
               if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
+              if (data.status === 'completed') clearInterval(checkTimer);
             }
           } catch(e) {}
         }, 3000);
@@ -1194,13 +1399,16 @@ function renderMainPage(origin) {
           const res = await fetch('/api/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: '再次通知：请尽快挪车', location: userLocation })
+            body: JSON.stringify({ message: '再次通知：请尽快挪车', location: userLocation, clientId })
           });
 
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
+            activeRequestId = data.requestId;
+            renderNotificationStatus(data.notifications);
             showToast('✅ 再次通知已发送！');
             document.getElementById('waitingText').innerText = '已再次通知，等待车主回应...';
+            startPolling(activeRequestId);
           } else {
             throw new Error(data.error || 'API Error');
           }
@@ -1218,7 +1426,9 @@ function renderMainPage(origin) {
   return new Response(html, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
 }
 
-function renderOwnerPage() {
+function renderOwnerPage(url) {
+  const requestId = url.searchParams.get('id') || '';
+  const token = url.searchParams.get('token') || '';
   const html = `
   <!DOCTYPE html>
   <html lang="zh-CN">
@@ -1356,6 +1566,32 @@ function renderOwnerPage() {
         box-shadow: none;
         cursor: not-allowed;
       }
+      .eta-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      .eta-btn {
+        border: 1px solid #c7d2fe;
+        background: #eef2ff;
+        color: #4338ca;
+        border-radius: 12px;
+        padding: 10px 8px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .eta-btn.active {
+        background: #6366f1;
+        color: white;
+      }
+      .btn-complete {
+        margin-top: 12px;
+        background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+        display: none;
+      }
+      .btn-complete.show { display: flex; }
 
       .done-msg {
         background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
@@ -1424,9 +1660,20 @@ function renderOwnerPage() {
         </div>
       </div>
 
+      <div class="eta-grid">
+        <button class="eta-btn active" onclick="selectEta('马上到', this)">马上到</button>
+        <button class="eta-btn" onclick="selectEta('约3分钟', this)">约3分钟</button>
+        <button class="eta-btn" onclick="selectEta('约5分钟', this)">约5分钟</button>
+      </div>
+
       <button id="confirmBtn" class="btn" onclick="confirmMove()">
         <span>🚀</span>
         <span>我已知晓，正在前往</span>
+      </button>
+
+      <button id="completeBtn" class="btn btn-complete" onclick="completeMove()">
+        <span>✅</span>
+        <span>已挪车完成</span>
       </button>
 
       <div id="doneMsg" class="done-msg">
@@ -1435,11 +1682,19 @@ function renderOwnerPage() {
     </div>
 
     <script>
+      const requestId = '${requestId.replace(/'/g, '')}';
+      const token = '${token.replace(/'/g, '')}';
       let ownerLocation = null;
+      let selectedEta = '马上到';
 
       window.onload = async () => {
+        if (!requestId || !token) {
+          document.querySelector('.subtitle').innerText = '确认链接缺少参数，请从通知消息重新打开';
+          document.getElementById('confirmBtn').disabled = true;
+          return;
+        }
         try {
-          const res = await fetch('/api/get-location');
+          const res = await fetch('/api/get-location?id=' + encodeURIComponent(requestId));
           if(res.ok) {
             const data = await res.json();
             if(data.amapUrl) {
@@ -1451,7 +1706,12 @@ function renderOwnerPage() {
         } catch(e) {}
       }
 
-      // 点击确认按钮时，触发浏览器授权
+      function selectEta(value, el) {
+        selectedEta = value;
+        document.querySelectorAll('.eta-btn').forEach(btn => btn.classList.remove('active'));
+        el.classList.add('active');
+      }
+
       async function confirmMove() {
         const btn = document.getElementById('confirmBtn');
         btn.disabled = true;
@@ -1460,42 +1720,62 @@ function renderOwnerPage() {
         if ('geolocation' in navigator) {
           navigator.geolocation.getCurrentPosition(
             async (pos) => {
-              // 允许 → 发送确认 + 位置
               ownerLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
               await doConfirm();
             },
-            async (err) => {
-              // 拒绝或失败 → 直接发送确认，不带位置
+            async () => {
               ownerLocation = null;
               await doConfirm();
             },
             { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
           );
         } else {
-          // 浏览器不支持定位 → 直接发送确认
           ownerLocation = null;
           await doConfirm();
         }
       }
 
-      // 发送确认
       async function doConfirm() {
         const btn = document.getElementById('confirmBtn');
         btn.innerHTML = '<span>⏳</span><span>确认中...</span>';
 
         try {
-          await fetch('/api/owner-confirm', {
+          const res = await fetch('/api/owner-confirm', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ location: ownerLocation })
+            body: JSON.stringify({ requestId, token, location: ownerLocation, eta: selectedEta })
           });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || '确认失败');
 
-          btn.innerHTML = '<span>✅</span><span>已确认</span>';
+          btn.innerHTML = '<span>✅</span><span>已确认，' + (data.eta || selectedEta) + '</span>';
           btn.style.background = 'linear-gradient(135deg, #9ca3af 0%, #6b7280 100%)';
+          document.getElementById('completeBtn').classList.add('show');
           document.getElementById('doneMsg').classList.add('show');
         } catch(e) {
           btn.disabled = false;
           btn.innerHTML = '<span>🚀</span><span>我已知晓，正在前往</span>';
+          document.querySelector('.subtitle').innerText = e.message || '确认失败，请重试';
+        }
+      }
+
+      async function completeMove() {
+        const btn = document.getElementById('completeBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span>⏳</span><span>提交中...</span>';
+        try {
+          const res = await fetch('/api/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId, token })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || '提交失败');
+          btn.innerHTML = '<span>✅</span><span>已完成</span>';
+          document.getElementById('doneMsg').innerHTML = '<p>✅ 已通知对方挪车完成！</p>';
+        } catch(e) {
+          btn.disabled = false;
+          btn.innerHTML = '<span>✅</span><span>已挪车完成</span>';
         }
       }
     </script>
