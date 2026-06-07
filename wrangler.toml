@@ -16,4 +16,5 @@ kv_namespaces = [
 # 环境变量（非敏感配置）
 [vars]
 EMAIL_TO = "your-email@example.com"
-# TG_BOT_TOKEN 和 TG_CHAT_ID 通过 wrangler secret 设置
+EMAIL_FROM = "MoveCar <noreply@your-domain.com>"
+# TG_BOT_TOKEN、TG_CHAT_ID、RESEND_API_KEY 通过 wrangler secret 设置
