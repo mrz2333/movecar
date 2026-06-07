@@ -544,7 +544,7 @@ async function handleCheckStatus(url) {
     eta: data.eta || null,
     completedAt: data.completedAt || null,
     notifications: data.notifications || null,
-    ownerLocation: data.ownerLocation || null
+    ownerLocation: null
   });
 }
 
@@ -557,20 +557,7 @@ async function handleOwnerConfirmAction(request) {
     if (!data) return jsonError('请求不存在或已过期', 404);
     if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
 
-    const ownerLocation = isValidLocation(body.location)
-      ? { lat: Number(body.location.lat), lng: Number(body.location.lng) }
-      : null;
     const eta = ['马上到', '约3分钟', '约5分钟'].includes(body.eta) ? body.eta : '正在前往';
-
-    if (ownerLocation) {
-      const urls = generateMapUrls(ownerLocation.lat, ownerLocation.lng);
-      data.ownerLocation = {
-        lat: ownerLocation.lat,
-        lng: ownerLocation.lng,
-        ...urls,
-        timestamp: Date.now()
-      };
-    }
 
     data.status = 'confirmed';
     data.eta = eta;
@@ -1167,11 +1154,7 @@ function renderMainPage(origin) {
       <div id="ownerFeedback" class="card owner-card hidden">
         <span style="font-size:56px; display:block; margin-bottom:16px">🎉</span>
         <h3>车主已收到通知</h3>
-        <p>正在赶来，点击查看车主位置</p>
-        <div id="ownerMapLinks" class="map-links" style="display:none">
-          <a id="ownerAmapLink" href="#" class="map-btn amap">🗺️ 高德地图</a>
-          <a id="ownerAppleLink" href="#" class="map-btn apple">🍎 Apple Maps</a>
-        </div>
+        <p id="ownerFeedbackText">正在赶来，请在车旁稍等</p>
       </div>
 
       <div class="card action-card">
@@ -1371,12 +1354,9 @@ function renderMainPage(origin) {
               document.getElementById('waitingText').innerText = data.status === 'completed'
                 ? '车主已处理完成 ✅'
                 : '车主已确认，' + (data.eta || '正在前往') + '...';
-
-              if (data.ownerLocation && data.ownerLocation.amapUrl) {
-                document.getElementById('ownerMapLinks').style.display = 'flex';
-                document.getElementById('ownerAmapLink').href = data.ownerLocation.amapUrl;
-                document.getElementById('ownerAppleLink').href = data.ownerLocation.appleUrl;
-              }
+              document.getElementById('ownerFeedbackText').innerText = data.status === 'completed'
+                ? '车主已完成挪车，感谢等待'
+                : (data.eta || '正在前往') + '，请在车旁稍等';
 
               if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
               if (data.status === 'completed') clearInterval(checkTimer);
@@ -1697,7 +1677,6 @@ function renderOwnerPage(url) {
     <script>
       const requestId = '${requestId.replace(/'/g, '')}';
       const token = '${token.replace(/'/g, '')}';
-      let ownerLocation = null;
       let selectedEta = '马上到';
 
       window.onload = async () => {
@@ -1728,24 +1707,8 @@ function renderOwnerPage(url) {
       async function confirmMove() {
         const btn = document.getElementById('confirmBtn');
         btn.disabled = true;
-        btn.innerHTML = '<span>📍</span><span>获取位置中...</span>';
-
-        if ('geolocation' in navigator) {
-          navigator.geolocation.getCurrentPosition(
-            async (pos) => {
-              ownerLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-              await doConfirm();
-            },
-            async () => {
-              ownerLocation = null;
-              await doConfirm();
-            },
-            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-          );
-        } else {
-          ownerLocation = null;
-          await doConfirm();
-        }
+        btn.innerHTML = '<span>⏳</span><span>确认中...</span>';
+        await doConfirm();
       }
 
       async function doConfirm() {
@@ -1756,7 +1719,7 @@ function renderOwnerPage(url) {
           const res = await fetch('/api/owner-confirm', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requestId, token, location: ownerLocation, eta: selectedEta })
+            body: JSON.stringify({ requestId, token, eta: selectedEta })
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || '确认失败');
