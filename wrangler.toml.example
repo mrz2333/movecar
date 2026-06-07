@@ -18,4 +18,4 @@ kv_namespaces = [
 EMAIL_TO = "your-email@example.com"
 EMAIL_FROM = "MoveCar <movecar@your-domain.com>"
 PHONE_NUMBER = "your-phone-number"
-# TG_BOT_TOKEN、TG_CHAT_ID、RESEND_API_KEY 通过 wrangler secret 设置
+# TG_BOT_TOKEN、TG_CHAT_ID、RESEND_API_KEY、DEBUG_KEY 通过 wrangler secret 设置

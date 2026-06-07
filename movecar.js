@@ -4,13 +4,44 @@ addEventListener('fetch', event => {
 
 const CONFIG = {
   KV_TTL: 3600,
-  DEBUG_KEY: 'YOUR_DEBUG_KEY',
+}
+
+function jsonResponse(data, init = {}) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init.headers || {})
+    }
+  });
+}
+
+function escapeHtml(str = '') {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function isValidLocation(location) {
+  return location
+    && Number.isFinite(Number(location.lat))
+    && Number.isFinite(Number(location.lng))
+    && Math.abs(Number(location.lat)) <= 90
+    && Math.abs(Number(location.lng)) <= 180;
+}
+
+function getDebugSecret() {
+  return typeof DEBUG_KEY !== 'undefined' ? DEBUG_KEY : '';
 }
 
 async function handleRequest(request) {
   const url = new URL(request.url);
   const debugKey = url.searchParams.get('debug');
-  const isDebug = debugKey === CONFIG.DEBUG_KEY;
+  const debugSecret = getDebugSecret();
+  const isDebug = !!debugSecret && debugKey === debugSecret;
   const path = url.pathname;
   
   // 测试邮件发送端点
@@ -18,12 +49,10 @@ async function handleRequest(request) {
     try {
       const to = typeof EMAIL_TO !== 'undefined' ? EMAIL_TO : 'not set';
       const result = await sendEmail('🚗 测试邮件', '这是一封测试邮件，如果您收到说明配置成功！', null, null);
-      return new Response(JSON.stringify({ 
+      return jsonResponse({ 
         success: true,
-        email_to: to,
+        email_configured: to !== 'not set',
         mail_result: result
-      }), {
-        headers: { 'Content-Type': 'application/json' }
       });
     } catch (error) {
       return new Response(JSON.stringify({ 
@@ -43,12 +72,10 @@ async function handleRequest(request) {
       // 测试位置（北京天安门 - GCJ02 坐标）
       const testLocation = { lat: 39.9087, lng: 116.3975 };
       const result = await sendTelegram('这是一条测试消息 🚗', 'https://example.com', testLocation);
-      return new Response(JSON.stringify({ 
+      return jsonResponse({ 
         success: true,
-        chat_id: chatId,
+        telegram_configured: chatId !== 'not set',
         telegram_result: result
-      }), {
-        headers: { 'Content-Type': 'application/json' }
       });
     } catch (error) {
       return new Response(JSON.stringify({ 
@@ -163,17 +190,17 @@ async function sendTelegram(message, confirmUrl, location) {
       return { sent: false, reason: 'not_configured' };
     }
     
-    // 构建消息内容（支持 Markdown）
-    let text = `🚗 *挪车请求*\n`;
-    if (message) text += `\n💬 留言: ${message}`;
+    // 构建消息内容（HTML 模式，避免 Markdown 特殊字符导致发送失败）
+    let text = `🚗 <b>挪车请求</b>\n`;
+    if (message) text += `\n💬 留言: ${escapeHtml(message)}`;
     
     // 添加位置信息（直接使用原始坐标，浏览器在中国返回的已经是 GCJ02）
-    if (location && location.lat && location.lng) {
+    if (isValidLocation(location)) {
       const amapUrl = `https://uri.amap.com/marker?position=${location.lng},${location.lat}&name=挪车位置`;
-      text += `\n\n📍 [点击查看位置](${amapUrl})`;
+      text += `\n\n📍 <a href="${amapUrl}">点击查看位置</a>`;
     }
     
-    text += `\n\n🔗 [点击确认挪车](${confirmUrl})`;
+    text += `\n\n🔗 <a href="${confirmUrl}">点击确认挪车</a>`;
     
     const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
@@ -181,7 +208,7 @@ async function sendTelegram(message, confirmUrl, location) {
       body: JSON.stringify({
         chat_id: chatId,
         text: text,
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         disable_web_page_preview: true
       }),
     });
@@ -338,8 +365,10 @@ async function sendEmail(subject, message, location, confirmUrl) {
 async function handleNotify(request, url) {
   try {
     const body = await request.json();
-    const message = body.message || '车旁有人等待';
-    const location = body.location || null;
+    const message = String(body.message || '车旁有人等待').slice(0, 200);
+    const location = isValidLocation(body.location)
+      ? { lat: Number(body.location.lat), lng: Number(body.location.lng) }
+      : null;
     const delayed = body.delayed || false;
 
     // 防骚扰频率限制：检查上次请求时间
@@ -384,11 +413,7 @@ async function handleNotify(request, url) {
 
     await MOVE_CAR_STATUS.put('notify_status', 'waiting', { expirationTtl: 600 });
 
-    // 如果是延迟发送，等待30秒
-    if (delayed) {
-      await new Promise(resolve => setTimeout(resolve, 30000));
-    }
-
+    // 无位置时由前端延迟 30 秒后再调用接口，避免 Worker 长时间挂起
     const encodedConfirmUrl = encodeURIComponent(confirmUrl);
     
     // 构建 Bark URL（如果配置了的话）
@@ -400,8 +425,8 @@ async function handleNotify(request, url) {
     
     // 构建 Pushplus 内容
     let pushplusContent = `<h2>🚗 挪车请求</h2>`;
-    if (message) pushplusContent += `<p>💬 留言: ${message}</p>`;
-    if (location && location.lat && location.lng) {
+    if (message) pushplusContent += `<p>💬 留言: ${escapeHtml(message)}</p>`;
+    if (location) {
       const gcj = wgs84ToGcj02(location.lat, location.lng);
       const amapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
       pushplusContent += `<p>📍 <a href="${amapUrl}">点击查看位置</a></p>`;
@@ -470,7 +495,9 @@ async function handleGetLocation() {
 async function handleOwnerConfirmAction(request) {
   try {
     const body = await request.json();
-    const ownerLocation = body.location || null;
+    const ownerLocation = isValidLocation(body.location)
+      ? { lat: Number(body.location.lat), lng: Number(body.location.lng) }
+      : null;
 
     if (ownerLocation) {
       const urls = generateMapUrls(ownerLocation.lat, ownerLocation.lng);
@@ -1098,26 +1125,29 @@ function renderMainPage(origin) {
         btn.innerHTML = '<span>🚀</span><span>发送中...</span>';
 
         try {
+          if (delayed) {
+            showToast('⏳ 未获取位置，30 秒后发送通知');
+            btn.innerHTML = '<span>⏳</span><span>等待 30 秒...</span>';
+            await new Promise(resolve => setTimeout(resolve, 30000));
+          }
+
           const res = await fetch('/api/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: msg, location: userLocation, delayed: delayed })
           });
 
+          const data = await res.json().catch(() => ({}));
           if (res.ok) {
-            if (delayed) {
-              showToast('⏳ 通知将延迟30秒发送');
-            } else {
-              showToast('✅ 发送成功！');
-            }
+            showToast('✅ 发送成功！');
             document.getElementById('mainView').style.display = 'none';
             document.getElementById('successView').style.display = 'flex';
             startPolling();
           } else {
-            throw new Error('API Error');
+            throw new Error(data.error || 'API Error');
           }
         } catch (e) {
-          showToast('❌ 发送失败，请重试');
+          showToast('❌ ' + (e.message || '发送失败，请重试'));
           btn.disabled = false;
           btn.innerHTML = '<span>🔔</span><span>一键通知车主</span>';
         }
@@ -1167,14 +1197,15 @@ function renderMainPage(origin) {
             body: JSON.stringify({ message: '再次通知：请尽快挪车', location: userLocation })
           });
 
+          const data = await res.json().catch(() => ({}));
           if (res.ok) {
             showToast('✅ 再次通知已发送！');
             document.getElementById('waitingText').innerText = '已再次通知，等待车主回应...';
           } else {
-            throw new Error('API Error');
+            throw new Error(data.error || 'API Error');
           }
         } catch (e) {
-          showToast('❌ 发送失败，请重试');
+          showToast('❌ ' + (e.message || '发送失败，请重试'));
         }
 
         btn.disabled = false;
