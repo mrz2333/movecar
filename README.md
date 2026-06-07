@@ -7,7 +7,7 @@
 - 🔔 **多通道通知** — Telegram Bot + Bark + Pushplus + 邮件，确保不错过任何挪车请求
 - 📍 **双向位置共享** — 车主可确认请求者确实在车旁
 - 📧 **精美 HTML 邮件** — 带地图链接的美观邮件通知
-- 📱 **Telegram 推送** — 即时消息通知，支持 Markdown 格式
+- 📱 **Telegram 推送** — 即时消息通知，使用 HTML 模式，避免特殊字符发送失败
 - 🛡️ **防骚扰机制** — 60 秒冷却时间，防止恶意频繁扫码
 - 🔒 **隐私保护** — 双方不暴露手机号，通过云端推送中转
 - 💸 **完全免费** — Cloudflare Workers 免费额度够用
@@ -32,7 +32,7 @@
 
 - ⚡ **即时推送** — 消息秒到，无需等待
 - 🌍 **全球可用** — 不受地区限制
-- 📝 **Markdown 支持** — 消息格式美观
+- 📝 **HTML 格式** — 消息格式美观，自动转义用户留言
 - 🔗 **可点击链接** — 直接跳转确认页面
 - 🆓 **完全免费** — Telegram Bot API 无限制
 
@@ -121,6 +121,7 @@ echo "YOUR_TG_BOT_TOKEN" | wrangler secret put TG_BOT_TOKEN
 echo "YOUR_TG_CHAT_ID" | wrangler secret put TG_CHAT_ID
 echo "YOUR_RESEND_API_KEY" | wrangler secret put RESEND_API_KEY
 echo "YOUR_PUSHPLUS_TOKEN" | wrangler secret put PUSHPLUS_TOKEN
+echo "YOUR_DEBUG_KEY" | wrangler secret put DEBUG_KEY
 
 # 部署
 wrangler deploy
@@ -167,6 +168,7 @@ wrangler deploy
 | `EMAIL_TO` | Variable | 接收邮件的邮箱 | 可选 |
 | `EMAIL_FROM` | Variable | 发件人（如 `MoveCar <noreply@yourdomain.com>`） | 邮件必填 |
 | `RESEND_API_KEY` | Secret | Resend API Key | 邮件必填 |
+| `DEBUG_KEY` | Secret | 调试接口密钥，用于 `/api/test-*?debug=...` | 推荐 |
 | `PHONE_NUMBER` | Variable | 备用联系电话 | 可选 |
 
 #### 获取 Telegram Bot Token
@@ -263,6 +265,14 @@ MIT
 - 邮件服务：[Resend](https://resend.com)（推荐的事务邮件服务）
 
 ## 📝 更新日志
+
+### v1.2.2 (本 Fork)
+
+- 🔐 `DEBUG_KEY` 改为 Worker Secret，避免调试密钥进入代码仓库
+- 🧼 调试接口不再返回邮箱、Telegram Chat ID 等敏感配置
+- 🛡️ Pushplus / Telegram 通知自动转义用户留言，降低 XSS 与格式解析失败风险
+- ⏱️ 无位置延迟改为前端等待，避免 Worker 长时间挂起
+- 💬 前端会显示后端返回的冷却/错误提示，重试体验更友好
 
 ### v1.2.1 (本 Fork)
 

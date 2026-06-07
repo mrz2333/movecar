@@ -18,6 +18,7 @@ build/
 # Cloudflare Wrangler
 .wrangler/
 wrangler.toml
+.debug_key
 
 # IDE
 .vscode/
