@@ -1247,6 +1247,8 @@ function renderMainPage(origin) {
     <script>
       let userLocation = null;
       let checkTimer = null;
+      let phoneTimer = null;
+      let ownerResponded = false;
       let activeRequestId = null;
       let activeCountdown = null;
       const clientId = getClientId();
@@ -1417,11 +1419,27 @@ function renderMainPage(origin) {
 
       function scheduleEmergencyPhone() {
         const btn = document.getElementById('phoneBtn');
+        clearEmergencyPhone();
+        ownerResponded = false;
         if (!btn || !btn.getAttribute('href') || btn.getAttribute('href') === 'tel:') return;
-        setTimeout(() => {
+        phoneTimer = setTimeout(() => {
+          if (ownerResponded) return;
           btn.classList.add('show');
           showToast('📞 车主超过3分钟未回应，可紧急联系');
         }, 180000);
+      }
+
+      function clearEmergencyPhone() {
+        if (phoneTimer) {
+          clearTimeout(phoneTimer);
+          phoneTimer = null;
+        }
+        document.getElementById('phoneBtn')?.classList.remove('show');
+      }
+
+      function markOwnerResponded() {
+        ownerResponded = true;
+        clearEmergencyPhone();
       }
 
       function confirmEmergencyCall() {
@@ -1439,7 +1457,7 @@ function renderMainPage(origin) {
             if (data.status === 'confirmed' || data.status === 'completed' || data.status === 'rejected') {
               const fb = document.getElementById('ownerFeedback');
               fb.classList.remove('hidden');
-              document.getElementById('phoneBtn')?.classList.remove('show');
+              markOwnerResponded();
 
               if (data.status === 'rejected') {
                 document.getElementById('waitingText').innerText = '车主反馈：可能扫错了 ⚠️';
