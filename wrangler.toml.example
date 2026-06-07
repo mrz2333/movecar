@@ -3,12 +3,12 @@ main = "movecar.js"
 compatibility_date = "2024-01-01"
 workers_dev = true
 
-# 自定义域名路由
+# 自定义域名路由（替换为你的域名）
 routes = [
-  { pattern = "movecar.your-domain.com", zone_name = "your-domain.com" }
+  { pattern = "movecar.example.com", zone_name = "example.com" }
 ]
 
-# KV 存储绑定
+# KV 存储绑定（替换为你的 KV namespace ID）
 kv_namespaces = [
   { binding = "MOVE_CAR_STATUS", id = "YOUR_KV_NAMESPACE_ID" }
 ]
@@ -16,6 +16,6 @@ kv_namespaces = [
 # 环境变量（非敏感配置）
 [vars]
 EMAIL_TO = "your-email@example.com"
-EMAIL_FROM = "MoveCar <movecar@resend.your-domain.com>"
-PHONE_NUMBER = "YOUR_PHONE_NUMBER"
+EMAIL_FROM = "MoveCar <movecar@your-domain.com>"
+PHONE_NUMBER = "your-phone-number"
 # TG_BOT_TOKEN、TG_CHAT_ID、RESEND_API_KEY 通过 wrangler secret 设置
