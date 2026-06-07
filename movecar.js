@@ -2,15 +2,19 @@ addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
 
-const CONFIG = { KV_TTL: 3600 }
+const CONFIG = {
+  KV_TTL: 3600,
+  DEBUG_KEY: 'YOUR_DEBUG_KEY',
+}
 
 async function handleRequest(request) {
   const url = new URL(request.url);
   const debugKey = url.searchParams.get('debug');
+  const isDebug = debugKey === CONFIG.DEBUG_KEY;
   const path = url.pathname;
   
   // 测试邮件发送端点
-  if (path === '/api/test-email' && debugKey === 'YOUR_DEBUG_KEY') {
+  if (path === '/api/test-email' && isDebug) {
     try {
       const to = typeof EMAIL_TO !== 'undefined' ? EMAIL_TO : 'not set';
       const result = await sendEmail('🚗 测试邮件', '这是一封测试邮件，如果您收到说明配置成功！', null, null);
@@ -33,7 +37,7 @@ async function handleRequest(request) {
   }
   
   // 测试 Telegram 推送端点
-  if (path === '/api/test-telegram' && debugKey === 'YOUR_DEBUG_KEY') {
+  if (path === '/api/test-telegram' && isDebug) {
     try {
       const chatId = typeof TG_CHAT_ID !== 'undefined' ? TG_CHAT_ID : 'not set';
       // 测试位置（北京天安门 - GCJ02 坐标）
@@ -59,7 +63,7 @@ async function handleRequest(request) {
   
   // 限制只允许中国大陆访问（debug 模式可跳过）
   const country = request.cf?.country;
-  if (country && country !== 'CN' && debugKey !== 'YOUR_DEBUG_KEY') {
+  if (country && country !== 'CN' && !isDebug) {
     return new Response(JSON.stringify({
       error: '此服务仅限中国大陆访问',
       message: 'This service is only available in mainland China'
@@ -293,27 +297,37 @@ async function sendEmail(subject, message, location, confirmUrl) {
     </body>
     </html>`;
     
-    // 使用 MailChannels (Cloudflare Workers 专属免费邮件服务)
-    const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
+    // 使用 Resend 发送（MailChannels 已不可用）
+    const resendKey = typeof RESEND_API_KEY !== 'undefined' ? RESEND_API_KEY : '';
+    const fromEmail = typeof EMAIL_FROM !== 'undefined' ? EMAIL_FROM : 'MoveCar <noreply@your-domain.com>';
+
+    if (!resendKey) {
+      console.log('RESEND_API_KEY not configured, skipping email notification');
+      return { sent: false, reason: 'not_configured' };
+    }
+
+    const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${resendKey}`
+      },
       body: JSON.stringify({
-        personalizations: [{ to: [{ email: to }] }],
-        from: { email: 'noreply@movecar.workers.dev', name: '挪车通知' },
+        from: fromEmail,
+        to: [to],
         subject: subject,
-        content: [
-          { type: 'text/html', value: htmlContent },
-          { type: 'text/plain', value: `🚗 挪车请求\n\n${textBody}${locationText}` }
-        ],
+        html: htmlContent,
+        text: `🚗 挪车请求\n\n${textBody}${locationText}`
       }),
     });
     
     if (!response.ok) {
-      console.error('MailChannels API error:', response.status);
-      return { sent: false, reason: 'api_error', status: response.status };
+      const errorText = await response.text();
+      console.error('Resend API error:', response.status, errorText);
+      return { sent: false, reason: 'api_error', status: response.status, error: errorText };
     }
     
-    console.log('Email sent successfully via MailChannels');
+    console.log('Email sent successfully via Resend');
     return { sent: true };
   } catch (error) {
     console.error('Failed to send email:', error);

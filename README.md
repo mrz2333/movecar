@@ -55,6 +55,7 @@
 - 🎨 **精美 HTML 邮件** — 渐变色头部、留言卡片、地图按钮
 - 📍 **位置信息** — 有位置时附带高德地图链接
 - 📬 **备用方案** — 当其他推送方式不可用时的保底
+- ✉️ **基于 Resend** — 需配置 `RESEND_API_KEY` 和可用发件域名
 
 ## 使用流程
 
@@ -131,6 +132,8 @@
 | `BARK_URL` | Variable | Bark 推送地址 | 可选 |
 | `PUSHPLUS_TOKEN` | Secret | Pushplus Token | 可选 |
 | `EMAIL_TO` | Variable | 接收邮件的邮箱 | 可选 |
+| `EMAIL_FROM` | Variable | 发件人（如 `MoveCar <noreply@yourdomain.com>`） | 邮件必填 |
+| `RESEND_API_KEY` | Secret | Resend API Key | 邮件必填 |
 | `PHONE_NUMBER` | Variable | 备用联系电话 | 可选 |
 
 #### 获取 Telegram Bot Token
@@ -146,7 +149,8 @@
 2. 发送任意消息
 3. 获取你的数字 ID
 
-> 💡 **推荐使用 Telegram Bot** — 免费、即时、全球可用！
+> 💡 **推荐使用 Telegram Bot** — 免费、即时、全球可用！  
+> ✉️ 如需邮件备用通知，请额外配置 Resend（`RESEND_API_KEY` + `EMAIL_FROM`）。
 
 ### 第五步：绑定域名（可选）
 
@@ -223,9 +227,16 @@ MIT
 ## 🙏 致谢
 
 - 原项目：[lesnolie/movecar](https://github.com/lesnolie/movecar)
-- 邮件服务：[MailChannels](https://mailchannels.com)（Cloudflare 专属免费邮件服务）
+- 邮件服务：[Resend](https://resend.com)（推荐的事务邮件服务）
 
 ## 📝 更新日志
+
+### v1.2.1 (本 Fork)
+
+- 🔧 合并远端 Telegram 推送与坐标修复改动
+- ✉️ 邮件通道从 MailChannels 切换为 Resend
+- 🧪 保留 `/api/test-telegram`、`/api/test-email` 调试端点用于快速验活
+- 📝 同步更新 README 的变量说明与邮件部署方式
 
 ### v1.2.0 (本 Fork)
 
