@@ -1226,13 +1226,13 @@ function renderMainPage(origin) {
       </div>
 
       <div id="ownerFeedback" class="card owner-card hidden">
-        <span style="font-size:56px; display:block; margin-bottom:16px">🎉</span>
-        <h3>车主已收到通知</h3>
+        <span id="ownerFeedbackIcon" style="font-size:56px; display:block; margin-bottom:16px">🎉</span>
+        <h3 id="ownerFeedbackTitle">车主已收到通知</h3>
         <p id="ownerFeedbackText">正在赶来，请在车旁稍等</p>
       </div>
 
       <div class="card action-card">
-        <p class="action-hint">车主暂未回应时，可再次提醒</p>
+        <p id="actionHint" class="action-hint">车主暂未回应时，可再次提醒</p>
         <button id="retryBtn" class="btn-retry" onclick="retryNotify()">
           <span>🔔</span>
           <span>再次通知</span>
@@ -1405,6 +1405,7 @@ function renderMainPage(origin) {
             document.getElementById('requestNoText').innerText = data.requestNo ? '请求编号 #' + data.requestNo : '请求已创建';
             document.getElementById('mainView').style.display = 'none';
             document.getElementById('successView').style.display = 'flex';
+            resetRequesterStatusUI('正在等待车主回应...');
             scheduleEmergencyPhone();
             startPolling(activeRequestId);
           } else {
@@ -1422,7 +1423,10 @@ function renderMainPage(origin) {
         clearEmergencyPhone();
         ownerResponded = false;
         if (!btn || !btn.getAttribute('href') || btn.getAttribute('href') === 'tel:') return;
-        phoneTimer = setTimeout(() => {
+        phoneTimer = setTimeout(async () => {
+          if (ownerResponded) return;
+          const latest = await fetchLatestStatus();
+          if (latest && applyOwnerStatus(latest)) return;
           if (ownerResponded) return;
           btn.classList.add('show');
           showToast('📞 车主超过3分钟未回应，可紧急联系');
@@ -1446,7 +1450,68 @@ function renderMainPage(origin) {
         return confirm('请仅在确实影响通行、且车主超过3分钟未回应时拨打电话。确定继续吗？');
       }
 
+      async function fetchLatestStatus() {
+        if (!activeRequestId) return null;
+        try {
+          const res = await fetch('/api/check-status?id=' + encodeURIComponent(activeRequestId));
+          return await res.json();
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function resetRequesterStatusUI(message) {
+        document.getElementById('waitingText').innerText = message || '正在等待车主回应...';
+        document.getElementById('ownerFeedback').classList.add('hidden');
+        document.getElementById('ownerFeedbackIcon').innerText = '🎉';
+        document.getElementById('ownerFeedbackTitle').innerText = '车主已收到通知';
+        document.getElementById('ownerFeedbackText').innerText = '正在赶来，请在车旁稍等';
+        document.getElementById('actionHint').innerText = '车主暂未回应时，可再次提醒';
+      }
+
+      function applyOwnerStatus(data) {
+        if (!data || !['confirmed', 'completed', 'rejected'].includes(data.status)) return false;
+
+        const fb = document.getElementById('ownerFeedback');
+        fb.classList.remove('hidden');
+        markOwnerResponded();
+
+        const icon = document.getElementById('ownerFeedbackIcon');
+        const title = document.getElementById('ownerFeedbackTitle');
+        const text = document.getElementById('ownerFeedbackText');
+        const waiting = document.getElementById('waitingText');
+        const actionHint = document.getElementById('actionHint');
+
+        if (data.status === 'rejected') {
+          icon.innerText = '⚠️';
+          title.innerText = '车主反馈：可能扫错了';
+          waiting.innerText = '车主反馈：可能扫错了 ⚠️';
+          text.innerText = data.ownerReply || '这可能不是对应车辆，请核对车牌或二维码';
+          actionHint.innerText = '请先核对车牌/二维码；如确认无误，可再提醒一次';
+          clearInterval(checkTimer);
+          return true;
+        }
+
+        if (data.status === 'completed') {
+          icon.innerText = '✅';
+          title.innerText = '车主已处理完成';
+          waiting.innerText = '车主已处理完成 ✅';
+          text.innerText = '车主已完成挪车，感谢等待';
+          actionHint.innerText = '已完成处理，无需再次提醒';
+          clearInterval(checkTimer);
+          return true;
+        }
+
+        icon.innerText = '🎉';
+        title.innerText = '车主已确认';
+        waiting.innerText = '车主已确认，' + (data.eta || '正在前往') + '...';
+        text.innerText = data.ownerReply || ((data.eta || '正在前往') + '，请在车旁稍等');
+        actionHint.innerText = '车主已回应，请耐心等待';
+        return true;
+      }
+
       function startPolling(requestId) {
+        if (checkTimer) clearInterval(checkTimer);
         let count = 0;
         checkTimer = setInterval(async () => {
           count++;
@@ -1454,25 +1519,7 @@ function renderMainPage(origin) {
           try {
             const res = await fetch('/api/check-status?id=' + encodeURIComponent(requestId));
             const data = await res.json();
-            if (data.status === 'confirmed' || data.status === 'completed' || data.status === 'rejected') {
-              const fb = document.getElementById('ownerFeedback');
-              fb.classList.remove('hidden');
-              markOwnerResponded();
-
-              if (data.status === 'rejected') {
-                document.getElementById('waitingText').innerText = '车主反馈：可能扫错了 ⚠️';
-                document.getElementById('ownerFeedbackText').innerText = data.ownerReply || '这可能不是对应车辆，请核对车牌或二维码';
-                clearInterval(checkTimer);
-              } else {
-                document.getElementById('waitingText').innerText = data.status === 'completed'
-                  ? '车主已处理完成 ✅'
-                  : '车主已确认，' + (data.eta || '正在前往') + '...';
-                document.getElementById('ownerFeedbackText').innerText = data.status === 'completed'
-                  ? '车主已完成挪车，感谢等待'
-                  : (data.ownerReply || ((data.eta || '正在前往') + '，请在车旁稍等'));
-                if (data.status === 'completed') clearInterval(checkTimer);
-              }
-
+            if (applyOwnerStatus(data)) {
               if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
             }
           } catch(e) {}
@@ -1502,7 +1549,7 @@ function renderMainPage(origin) {
           if (res.ok) {
             activeRequestId = data.requestId;
             showToast('✅ 再次通知已发送！');
-            document.getElementById('waitingText').innerText = '已再次通知，等待车主回应...';
+            resetRequesterStatusUI('已再次通知，等待车主回应...');
             scheduleEmergencyPhone();
             startPolling(activeRequestId);
           } else {

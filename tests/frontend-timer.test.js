@@ -16,20 +16,33 @@ function createClassList() {
   };
 }
 
-const elements = {
-  phoneBtn: {
-    classList: createClassList(),
-    getAttribute: (name) => (name === 'href' ? 'tel:10086' : null),
-  },
-  toast: {
+function el(initial = {}) {
+  return {
     innerText: '',
+    innerHTML: '',
     classList: createClassList(),
-  },
+    getAttribute: () => null,
+    ...initial,
+  };
+}
+
+const elements = {
+  phoneBtn: el({ getAttribute: (name) => (name === 'href' ? 'tel:10086' : null) }),
+  toast: el(),
+  ownerFeedback: el(),
+  ownerFeedbackIcon: el({ innerText: '🎉' }),
+  ownerFeedbackTitle: el({ innerText: '车主已收到通知' }),
+  ownerFeedbackText: el({ innerText: '正在赶来，请在车旁稍等' }),
+  waitingText: el({ innerText: '正在等待车主回应...' }),
+  actionHint: el({ innerText: '车主暂未回应时，可再次提醒' }),
 };
+
+elements.ownerFeedback.classList.add('hidden');
 
 let now = 0;
 let nextTimerId = 1;
 const timers = new Map();
+let statusResponse = { status: 'waiting' };
 
 function setFakeTimeout(fn, delay) {
   const id = nextTimerId++;
@@ -42,14 +55,14 @@ function clearFakeTimeout(id) {
   if (timer) timer.cleared = true;
 }
 
-function advance(ms) {
+async function advance(ms) {
   now += ms;
   const due = [...timers.entries()]
     .filter(([, timer]) => !timer.cleared && timer.at <= now)
     .sort((a, b) => a[1].at - b[1].at);
   for (const [id, timer] of due) {
     timer.cleared = true;
-    timer.fn();
+    await timer.fn();
     timers.delete(id);
   }
 }
@@ -60,6 +73,7 @@ const sandbox = {
   localStorage: { getItem: () => null, setItem: () => {} },
   document: { getElementById: (id) => elements[id] || null },
   navigator: {},
+  fetch: async () => ({ json: async () => statusResponse }),
   setTimeout: setFakeTimeout,
   clearTimeout: clearFakeTimeout,
   setInterval: () => 0,
@@ -69,21 +83,40 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(script, sandbox);
 
-sandbox.scheduleEmergencyPhone();
-advance(179999);
-assert.strictEqual(elements.phoneBtn.classList.contains('show'), false, 'phone should stay hidden before 3 minutes');
-advance(1);
-assert.strictEqual(elements.phoneBtn.classList.contains('show'), true, 'phone should show after 3 minutes without owner response');
+(async () => {
+  vm.runInContext("activeRequestId = 'req-test'", sandbox);
 
-sandbox.scheduleEmergencyPhone();
-advance(60000);
-sandbox.markOwnerResponded();
-advance(120000);
-assert.strictEqual(elements.phoneBtn.classList.contains('show'), false, 'phone should not show after owner responded before timeout');
+  statusResponse = { status: 'waiting' };
+  sandbox.scheduleEmergencyPhone();
+  await advance(179999);
+  assert.strictEqual(elements.phoneBtn.classList.contains('show'), false, 'phone should stay hidden before 3 minutes');
+  await advance(1);
+  assert.strictEqual(elements.phoneBtn.classList.contains('show'), true, 'phone should show after 3 minutes without owner response');
 
-sandbox.scheduleEmergencyPhone();
-sandbox.scheduleEmergencyPhone();
-advance(180000);
-assert.strictEqual(elements.phoneBtn.classList.contains('show'), true, 'rescheduled phone timer should still show after 3 minutes');
+  sandbox.scheduleEmergencyPhone();
+  await advance(60000);
+  sandbox.markOwnerResponded();
+  await advance(120000);
+  assert.strictEqual(elements.phoneBtn.classList.contains('show'), false, 'phone should not show after owner responded before timeout');
 
-console.log('✅ frontend emergency phone timer tests passed');
+  sandbox.scheduleEmergencyPhone();
+  sandbox.scheduleEmergencyPhone();
+  statusResponse = { status: 'waiting' };
+  await advance(180000);
+  assert.strictEqual(elements.phoneBtn.classList.contains('show'), true, 'rescheduled phone timer should still show after 3 minutes');
+
+  sandbox.scheduleEmergencyPhone();
+  statusResponse = { status: 'rejected', ownerReply: '这不是我的车，请核对车牌' };
+  await advance(180000);
+  assert.strictEqual(elements.phoneBtn.classList.contains('show'), false, 'phone should not flash when latest status is rejected');
+  assert.strictEqual(elements.ownerFeedbackIcon.innerText, '⚠️');
+  assert.strictEqual(elements.ownerFeedbackTitle.innerText, '车主反馈：可能扫错了');
+  assert.strictEqual(elements.ownerFeedbackText.innerText, '这不是我的车，请核对车牌');
+  assert.strictEqual(elements.waitingText.innerText, '车主反馈：可能扫错了 ⚠️');
+  assert.strictEqual(elements.ownerFeedback.classList.contains('hidden'), false);
+
+  console.log('✅ frontend emergency phone timer tests passed');
+})().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
