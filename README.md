@@ -95,12 +95,45 @@
 
 ## 部署教程
 
-### 第一步：注册 Cloudflare 账号
+### 方式一：Wrangler CLI 部署（推荐）
+
+```bash
+# 克隆仓库
+git clone https://github.com/mrz2333/movecar.git
+cd movecar
+
+# 安装 Wrangler
+npm install -g wrangler
+
+# 登录 Cloudflare
+wrangler login
+
+# 复制配置模板并填入你的信息
+cp wrangler.toml.example wrangler.toml
+# 编辑 wrangler.toml，替换域名、KV ID、邮箱、手机号等
+
+# 创建 KV namespace
+wrangler kv namespace create MOVE_CAR_STATUS
+# 将输出的 ID 填入 wrangler.toml
+
+# 设置敏感变量（Secret）
+echo "YOUR_TG_BOT_TOKEN" | wrangler secret put TG_BOT_TOKEN
+echo "YOUR_TG_CHAT_ID" | wrangler secret put TG_CHAT_ID
+echo "YOUR_RESEND_API_KEY" | wrangler secret put RESEND_API_KEY
+echo "YOUR_PUSHPLUS_TOKEN" | wrangler secret put PUSHPLUS_TOKEN
+
+# 部署
+wrangler deploy
+```
+
+### 方式二：网页端部署
+
+#### 第一步：注册 Cloudflare 账号
 
 1. 打开 https://dash.cloudflare.com/sign-up
 2. 输入邮箱和密码，完成注册
 
-### 第二步：创建 Worker
+#### 第二步：创建 Worker
 
 1. 登录后点击左侧菜单「Workers & Pages」
 2. 点击「Create」→「Create Worker」
@@ -110,7 +143,7 @@
 6. 复制 `movecar.js` 全部内容粘贴进去
 7. 点击右上角「Deploy」保存
 
-### 第三步：创建 KV 存储
+#### 第三步：创建 KV 存储
 
 1. 左侧菜单点击「KV」
 2. 点击「Create a namespace」
@@ -120,7 +153,7 @@
 6. Variable name 填 `MOVE_CAR_STATUS`
 7. 选择刚创建的 namespace，点击「Deploy」
 
-### 第四步：配置环境变量
+#### 第四步：配置环境变量
 
 1. Worker →「Settings」→「Variables and Secrets」
 2. 添加以下变量（敏感信息使用 Secret）：
@@ -152,7 +185,7 @@
 > 💡 **推荐使用 Telegram Bot** — 免费、即时、全球可用！  
 > ✉️ 如需邮件备用通知，请额外配置 Resend（`RESEND_API_KEY` + `EMAIL_FROM`）。
 
-### 第五步：绑定域名（可选）
+#### 第五步：绑定域名（可选）
 
 1. Worker →「Settings」→「Domains & Routes」
 2. 点击「Add」→「Custom Domain」

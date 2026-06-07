@@ -17,6 +17,7 @@ build/
 
 # Cloudflare Wrangler
 .wrangler/
+wrangler.toml
 
 # IDE
 .vscode/
