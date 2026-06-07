@@ -113,7 +113,7 @@ async function run() {
     const status = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/check-status?id=${notify.requestId}`)));
     assert.strictEqual(status.status, 'confirmed');
     assert.strictEqual(status.eta, '约3分钟');
-    assert.strictEqual(status.ownerLocation.lat, 40);
+    assert.strictEqual(status.ownerLocation, null, 'requester should not receive owner location');
   }
 
   {
