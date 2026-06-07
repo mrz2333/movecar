@@ -116,6 +116,29 @@ async function run() {
     assert.strictEqual(status.ownerLocation.lat, 40);
   }
 
+  {
+    const worker = loadWorker();
+    const clientId = 'annoying-client';
+    const notify = await postNotify(worker, '恶意反复扫码', 39.9, 116.3, clientId);
+    const confirmUrl = extractConfirmUrl(worker);
+
+    const block = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/block-client', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token: confirmUrl.searchParams.get('token') })
+    }));
+    assert.strictEqual(block.status, 200, 'owner should be able to block requester from confirm page');
+
+    const blockedNotify = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: '继续骚扰', location: { lat: 39.9, lng: 116.3 }, clientId })
+    }));
+    assert.strictEqual(blockedNotify.status, 403, 'blocked client should not be able to notify again');
+    const blockedBody = await json(blockedNotify);
+    assert.strictEqual(blockedBody.error, '此设备已被车主拉黑');
+  }
+
   console.log('✅ movecar product-flow tests passed');
 }
 
