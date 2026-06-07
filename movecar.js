@@ -146,6 +146,10 @@ async function handleRequest(request) {
     return handleCompleteAction(request);
   }
 
+  if (path === '/api/block-client' && request.method === 'POST') {
+    return handleBlockClientAction(request);
+  }
+
   if (path === '/owner-confirm') {
     return renderOwnerPage(url);
   }
@@ -392,6 +396,10 @@ async function handleNotify(request, url) {
     const delayed = body.delayed || false;
     const now = Date.now();
     const clientId = String(body.clientId || '').slice(0, 80).replace(/[^a-zA-Z0-9_-]/g, '') || 'anonymous';
+    const blockKey = `blocked:${clientId}`;
+    if (await MOVE_CAR_STATUS.get(blockKey)) {
+      return jsonError('此设备已被车主拉黑', 403);
+    }
     const cooldownKey = `cooldown:${clientId}`;
 
     // 防骚扰频率限制：按客户端隔离，避免全局误伤其他扫码用户
@@ -419,6 +427,7 @@ async function handleNotify(request, url) {
       message,
       delayed,
       createdAt: now,
+      clientId,
       status: 'waiting',
       location: null,
       notifications: null,
@@ -588,6 +597,29 @@ async function handleCompleteAction(request) {
     return jsonResponse({ success: true, status: data.status });
   } catch (error) {
     return jsonError(error.message || '完成失败', 500);
+  }
+}
+
+async function handleBlockClientAction(request) {
+  try {
+    const body = await request.json();
+    const requestId = body.requestId;
+    const token = body.token;
+    const data = await getRequestData(requestId);
+    if (!data) return jsonError('请求不存在或已过期', 404);
+    if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+    if (!data.clientId) return jsonError('无法识别扫码设备', 400);
+
+    await MOVE_CAR_STATUS.put(`blocked:${data.clientId}`, JSON.stringify({
+      requestId,
+      blockedAt: Date.now()
+    }), { expirationTtl: 30 * 24 * 3600 });
+    data.blockedAt = Date.now();
+    data.status = data.status === 'waiting' ? 'blocked' : data.status;
+    await saveRequestData(requestId, data);
+    return jsonResponse({ success: true, blocked: true });
+  } catch (error) {
+    return jsonError(error.message || '拉黑失败', 500);
   }
 }
 
@@ -770,23 +802,6 @@ function renderMainPage(origin) {
         color: #94a3b8;
         font-size: 12px;
         padding: 0 clamp(16px, 4vw, 24px) 10px;
-      }
-      .notify-status {
-        margin-top: 16px;
-        display: grid;
-        gap: 8px;
-        text-align: left;
-      }
-      .status-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 12px;
-        background: rgba(255,255,255,0.6);
-        border-radius: 12px;
-        padding: 10px 12px;
-        font-size: 14px;
-        color: #155724;
       }
       .countdown-line {
         font-size: 13px;
@@ -1147,7 +1162,6 @@ function renderMainPage(origin) {
         <h2>通知已发送！</h2>
         <p id="requestNoText">请求已创建</p>
         <p id="waitingText" class="loading-text">正在等待车主回应...</p>
-        <div id="notifyStatus" class="notify-status"></div>
       </div>
 
       <div id="ownerFeedback" class="card owner-card hidden">
@@ -1330,7 +1344,6 @@ function renderMainPage(origin) {
             activeRequestId = data.requestId;
             showToast('✅ 发送成功！');
             document.getElementById('requestNoText').innerText = data.requestNo ? '请求编号 #' + data.requestNo : '请求已创建';
-            renderNotificationStatus(data.notifications);
             document.getElementById('mainView').style.display = 'none';
             document.getElementById('successView').style.display = 'flex';
             startPolling(activeRequestId);
@@ -1342,17 +1355,6 @@ function renderMainPage(origin) {
           btn.disabled = false;
           updateNotifyButton();
         }
-      }
-
-      function renderNotificationStatus(notifications) {
-        const box = document.getElementById('notifyStatus');
-        if (!box || !notifications) return;
-        const labels = { telegram: 'Telegram', email: '邮件', pushplus: 'Pushplus', bark: 'Bark' };
-        box.innerHTML = Object.keys(labels).map(key => {
-          const item = notifications[key] || {};
-          const text = item.sent ? '✅ 已发送' : (item.reason === 'not_configured' ? '⚪ 未配置' : '⚠️ 失败');
-          return '<div class="status-row"><span>' + labels[key] + '</span><b>' + text + '</b></div>';
-        }).join('');
       }
 
       function startPolling(requestId) {
@@ -1405,7 +1407,6 @@ function renderMainPage(origin) {
           const data = await res.json().catch(() => ({}));
           if (res.ok) {
             activeRequestId = data.requestId;
-            renderNotificationStatus(data.notifications);
             showToast('✅ 再次通知已发送！');
             document.getElementById('waitingText').innerText = '已再次通知，等待车主回应...';
             startPolling(activeRequestId);
@@ -1592,6 +1593,13 @@ function renderOwnerPage(url) {
         display: none;
       }
       .btn-complete.show { display: flex; }
+      .btn-block {
+        margin-top: 12px;
+        background: transparent;
+        color: #dc2626;
+        border: 1px solid #fecaca;
+        box-shadow: none;
+      }
 
       .done-msg {
         background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
@@ -1674,6 +1682,11 @@ function renderOwnerPage(url) {
       <button id="completeBtn" class="btn btn-complete" onclick="completeMove()">
         <span>✅</span>
         <span>已挪车完成</span>
+      </button>
+
+      <button id="blockBtn" class="btn btn-block" onclick="blockClient()">
+        <span>🚫</span>
+        <span>拉黑此扫码设备</span>
       </button>
 
       <div id="doneMsg" class="done-msg">
@@ -1776,6 +1789,29 @@ function renderOwnerPage(url) {
         } catch(e) {
           btn.disabled = false;
           btn.innerHTML = '<span>✅</span><span>已挪车完成</span>';
+        }
+      }
+
+      async function blockClient() {
+        if (!confirm('确定拉黑这个扫码设备吗？30天内它将无法再次发送通知。')) return;
+        const btn = document.getElementById('blockBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span>⏳</span><span>正在拉黑...</span>';
+        try {
+          const res = await fetch('/api/block-client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId, token })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || '拉黑失败');
+          btn.innerHTML = '<span>✅</span><span>已拉黑此设备</span>';
+          document.getElementById('doneMsg').classList.add('show');
+          document.getElementById('doneMsg').innerHTML = '<p>🚫 已拉黑该扫码设备，30天内将无法再次通知。</p>';
+        } catch(e) {
+          btn.disabled = false;
+          btn.innerHTML = '<span>🚫</span><span>拉黑此扫码设备</span>';
+          document.querySelector('.subtitle').innerText = e.message || '拉黑失败，请重试';
         }
       }
     </script>
