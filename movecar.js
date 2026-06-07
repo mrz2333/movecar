@@ -134,6 +134,10 @@ async function handleRequest(request) {
     return handleGetLocation(url);
   }
 
+  if (path === '/api/request-info') {
+    return handleRequestInfo(url);
+  }
+
   if (path === '/api/owner-confirm' && request.method === 'POST') {
     return handleOwnerConfirmAction(request);
   }
@@ -148,6 +152,10 @@ async function handleRequest(request) {
 
   if (path === '/api/block-client' && request.method === 'POST') {
     return handleBlockClientAction(request);
+  }
+
+  if (path === '/api/reject-request' && request.method === 'POST') {
+    return handleRejectRequestAction(request);
   }
 
   if (path === '/owner-confirm') {
@@ -201,6 +209,23 @@ function generateMapUrls(lat, lng) {
     amapUrl: `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=位置`,
     appleUrl: `https://maps.apple.com/?ll=${gcj.lat},${gcj.lng}&q=位置`
   };
+}
+
+async function reverseGeocodeLocation(lat, lng) {
+  const key = typeof AMAP_KEY !== 'undefined' ? AMAP_KEY : '';
+  if (!key) return null;
+  try {
+    const gcj = wgs84ToGcj02(lat, lng);
+    const api = `https://restapi.amap.com/v3/geocode/regeo?key=${encodeURIComponent(key)}&location=${gcj.lng},${gcj.lat}&extensions=base&radius=1000`;
+    const res = await fetch(api);
+    const data = await res.json();
+    if (data.status === '1' && data.regeocode?.formatted_address) {
+      return data.regeocode.formatted_address;
+    }
+  } catch (error) {
+    console.error('Reverse geocode failed:', error.message);
+  }
+  return null;
 }
 
 // Telegram Bot 推送
@@ -432,7 +457,10 @@ async function handleNotify(request, url) {
       location: null,
       notifications: null,
       eta: null,
-      completedAt: null
+      completedAt: null,
+      requesterAddress: null,
+      ownerReply: null,
+      rejectedReason: null
     };
 
     if (location) {
@@ -443,6 +471,7 @@ async function handleNotify(request, url) {
         lng: location.lng,
         ...urls
       };
+      requestData.requesterAddress = await reverseGeocodeLocation(location.lat, location.lng);
     } else {
       notifyBody += '\\n⚠️ 未提供位置信息';
     }
@@ -525,9 +554,26 @@ async function handleGetLocation(url) {
   const requestId = url.searchParams.get('id');
   const data = await getRequestData(requestId);
   if (data?.location) {
-    return jsonResponse(data.location);
+    return jsonResponse({ ...data.location, address: data.requesterAddress || null });
   }
   return jsonError('No location', 404);
+}
+
+async function handleRequestInfo(url) {
+  const requestId = url.searchParams.get('id');
+  const token = url.searchParams.get('token');
+  const data = await getRequestData(requestId);
+  if (!data) return jsonError('请求不存在或已过期', 404);
+  if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+
+  return jsonResponse({
+    success: true,
+    requestId,
+    requestNo: requestId.slice(-4).toUpperCase(),
+    message: data.message || '',
+    location: data.location ? { ...data.location, address: data.requesterAddress || null } : null,
+    status: data.status || 'waiting'
+  });
 }
 
 async function handleCheckStatus(url) {
@@ -544,6 +590,9 @@ async function handleCheckStatus(url) {
     eta: data.eta || null,
     completedAt: data.completedAt || null,
     notifications: data.notifications || null,
+    ownerReply: data.ownerReply || null,
+    rejectedReason: data.rejectedReason || null,
+    requesterAddress: data.requesterAddress || null,
     ownerLocation: null
   });
 }
@@ -558,12 +607,14 @@ async function handleOwnerConfirmAction(request) {
     if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
 
     const eta = ['马上到', '约3分钟', '约5分钟'].includes(body.eta) ? body.eta : '正在前往';
+    const ownerReply = String(body.ownerReply || eta || '车主已确认，正在前往').slice(0, 120);
 
     data.status = 'confirmed';
     data.eta = eta;
+    data.ownerReply = ownerReply;
     data.confirmedAt = Date.now();
     await saveRequestData(requestId, data);
-    return jsonResponse({ success: true, status: data.status, eta: data.eta });
+    return jsonResponse({ success: true, status: data.status, eta: data.eta, ownerReply: data.ownerReply });
   } catch (error) {
     return jsonError(error.message || '确认失败', 500);
   }
@@ -607,6 +658,27 @@ async function handleBlockClientAction(request) {
     return jsonResponse({ success: true, blocked: true });
   } catch (error) {
     return jsonError(error.message || '拉黑失败', 500);
+  }
+}
+
+async function handleRejectRequestAction(request) {
+  try {
+    const body = await request.json();
+    const requestId = body.requestId;
+    const token = body.token;
+    const data = await getRequestData(requestId);
+    if (!data) return jsonError('请求不存在或已过期', 404);
+    if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+
+    const ownerReply = String(body.ownerReply || '这可能不是我的车，请核对车牌或二维码').slice(0, 120);
+    data.status = 'rejected';
+    data.ownerReply = ownerReply;
+    data.rejectedReason = ownerReply;
+    data.rejectedAt = Date.now();
+    await saveRequestData(requestId, data);
+    return jsonResponse({ success: true, status: 'rejected', ownerReply });
+  } catch (error) {
+    return jsonError(error.message || '提交失败', 500);
   }
 }
 
@@ -948,7 +1020,9 @@ function renderMainPage(origin) {
       .btn-phone {
         background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
         box-shadow: 0 8px 24px rgba(239, 68, 68, 0.3);
+        display: none;
       }
+      .btn-phone.show { display: flex; }
       .btn-phone:active { transform: scale(0.98); }
 
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
@@ -1158,14 +1232,14 @@ function renderMainPage(origin) {
       </div>
 
       <div class="card action-card">
-        <p class="action-hint">车主没反应？试试其他方式</p>
+        <p class="action-hint">车主暂未回应时，可再次提醒</p>
         <button id="retryBtn" class="btn-retry" onclick="retryNotify()">
           <span>🔔</span>
           <span>再次通知</span>
         </button>
-        <a href="tel:${phone}" class="btn-phone">
+        <a id="phoneBtn" href="tel:${phone}" class="btn-phone" onclick="return confirmEmergencyCall()">
           <span>📞</span>
-          <span>直接打电话</span>
+          <span>紧急联系车主</span>
         </a>
       </div>
     </div>
@@ -1329,6 +1403,7 @@ function renderMainPage(origin) {
             document.getElementById('requestNoText').innerText = data.requestNo ? '请求编号 #' + data.requestNo : '请求已创建';
             document.getElementById('mainView').style.display = 'none';
             document.getElementById('successView').style.display = 'flex';
+            scheduleEmergencyPhone();
             startPolling(activeRequestId);
           } else {
             throw new Error(data.error || 'API Error');
@@ -1340,6 +1415,19 @@ function renderMainPage(origin) {
         }
       }
 
+      function scheduleEmergencyPhone() {
+        const btn = document.getElementById('phoneBtn');
+        if (!btn || !btn.getAttribute('href') || btn.getAttribute('href') === 'tel:') return;
+        setTimeout(() => {
+          btn.classList.add('show');
+          showToast('📞 车主超过3分钟未回应，可紧急联系');
+        }, 180000);
+      }
+
+      function confirmEmergencyCall() {
+        return confirm('请仅在确实影响通行、且车主超过3分钟未回应时拨打电话。确定继续吗？');
+      }
+
       function startPolling(requestId) {
         let count = 0;
         checkTimer = setInterval(async () => {
@@ -1348,18 +1436,26 @@ function renderMainPage(origin) {
           try {
             const res = await fetch('/api/check-status?id=' + encodeURIComponent(requestId));
             const data = await res.json();
-            if (data.status === 'confirmed' || data.status === 'completed') {
+            if (data.status === 'confirmed' || data.status === 'completed' || data.status === 'rejected') {
               const fb = document.getElementById('ownerFeedback');
               fb.classList.remove('hidden');
-              document.getElementById('waitingText').innerText = data.status === 'completed'
-                ? '车主已处理完成 ✅'
-                : '车主已确认，' + (data.eta || '正在前往') + '...';
-              document.getElementById('ownerFeedbackText').innerText = data.status === 'completed'
-                ? '车主已完成挪车，感谢等待'
-                : (data.eta || '正在前往') + '，请在车旁稍等';
+              document.getElementById('phoneBtn')?.classList.remove('show');
+
+              if (data.status === 'rejected') {
+                document.getElementById('waitingText').innerText = '车主反馈：可能扫错了 ⚠️';
+                document.getElementById('ownerFeedbackText').innerText = data.ownerReply || '这可能不是对应车辆，请核对车牌或二维码';
+                clearInterval(checkTimer);
+              } else {
+                document.getElementById('waitingText').innerText = data.status === 'completed'
+                  ? '车主已处理完成 ✅'
+                  : '车主已确认，' + (data.eta || '正在前往') + '...';
+                document.getElementById('ownerFeedbackText').innerText = data.status === 'completed'
+                  ? '车主已完成挪车，感谢等待'
+                  : (data.ownerReply || ((data.eta || '正在前往') + '，请在车旁稍等'));
+                if (data.status === 'completed') clearInterval(checkTimer);
+              }
 
               if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
-              if (data.status === 'completed') clearInterval(checkTimer);
             }
           } catch(e) {}
         }, 3000);
@@ -1389,6 +1485,7 @@ function renderMainPage(origin) {
             activeRequestId = data.requestId;
             showToast('✅ 再次通知已发送！');
             document.getElementById('waitingText').innerText = '已再次通知，等待车主回应...';
+            scheduleEmergencyPhone();
             startPolling(activeRequestId);
           } else {
             throw new Error(data.error || 'API Error');
@@ -1567,6 +1664,55 @@ function renderOwnerPage(url) {
         background: #6366f1;
         color: white;
       }
+      .info-box {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 12px 14px;
+        margin-bottom: 14px;
+        text-align: left;
+      }
+      .info-box .label {
+        font-size: 12px;
+        color: #64748b;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      .info-box .value {
+        color: #1e293b;
+        font-size: 14px;
+        line-height: 1.5;
+        word-break: break-word;
+      }
+      .reply-input {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 12px;
+        padding: 12px;
+        font-size: 14px;
+        margin-bottom: 12px;
+        outline: none;
+      }
+      .quick-replies {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+      }
+      .quick-reply {
+        border: 1px solid #bae6fd;
+        background: #f0f9ff;
+        color: #0369a1;
+        border-radius: 999px;
+        padding: 8px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .btn-reject {
+        margin-top: 12px;
+        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      }
       .btn-complete {
         margin-top: 12px;
         background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
@@ -1640,11 +1786,31 @@ function renderOwnerPage(url) {
       <h1>收到挪车请求</h1>
       <p class="subtitle">对方正在等待，请尽快确认</p>
 
+      <div id="requestMessageBox" class="info-box" style="display:none">
+        <div class="label">💬 对方留言</div>
+        <div id="requestMessageText" class="value"></div>
+      </div>
+
       <div id="mapArea" class="map-section">
         <p>📍 对方位置</p>
+        <div id="requestAddressText" class="info-box" style="margin-bottom:12px; display:none">
+          <div class="label">位置文字</div>
+          <div id="requestAddressValue" class="value"></div>
+        </div>
         <div class="map-links">
           <a id="amapLink" href="#" class="map-btn amap">🗺️ 高德地图</a>
           <a id="appleLink" href="#" class="map-btn apple">🍎 Apple Maps</a>
+        </div>
+      </div>
+
+      <div class="info-box">
+        <div class="label">回复对方</div>
+        <input id="ownerReplyInput" class="reply-input" maxlength="120" value="我马上到，请稍等" />
+        <div class="quick-replies">
+          <button class="quick-reply" onclick="setOwnerReply('我马上到，请稍等')">我马上到</button>
+          <button class="quick-reply" onclick="setOwnerReply('约3分钟到，请稍等')">约3分钟</button>
+          <button class="quick-reply" onclick="setOwnerReply('约5分钟到，请稍等')">约5分钟</button>
+          <button class="quick-reply" onclick="setOwnerReply('这不是我的车，请核对车牌')">不是我的车</button>
         </div>
       </div>
 
@@ -1657,6 +1823,11 @@ function renderOwnerPage(url) {
       <button id="confirmBtn" class="btn" onclick="confirmMove()">
         <span>🚀</span>
         <span>我已知晓，正在前往</span>
+      </button>
+
+      <button id="rejectBtn" class="btn btn-reject" onclick="rejectRequest()">
+        <span>⚠️</span>
+        <span>不是我的车 / 误扫码</span>
       </button>
 
       <button id="completeBtn" class="btn btn-complete" onclick="completeMove()">
@@ -1686,13 +1857,19 @@ function renderOwnerPage(url) {
           return;
         }
         try {
-          const res = await fetch('/api/get-location?id=' + encodeURIComponent(requestId));
+          const res = await fetch('/api/request-info?id=' + encodeURIComponent(requestId) + '&token=' + encodeURIComponent(token));
           if(res.ok) {
             const data = await res.json();
-            if(data.amapUrl) {
+            if (data.message) {
+              document.getElementById('requestMessageBox').style.display = 'block';
+              document.getElementById('requestMessageText').innerText = data.message;
+            }
+            if(data.location && data.location.amapUrl) {
               document.getElementById('mapArea').classList.add('show');
-              document.getElementById('amapLink').href = data.amapUrl;
-              document.getElementById('appleLink').href = data.appleUrl;
+              document.getElementById('amapLink').href = data.location.amapUrl;
+              document.getElementById('appleLink').href = data.location.appleUrl;
+              document.getElementById('requestAddressText').style.display = 'block';
+              document.getElementById('requestAddressValue').innerText = data.location.address || '已获取对方位置，可打开地图查看具体位置';
             }
           }
         } catch(e) {}
@@ -1702,6 +1879,11 @@ function renderOwnerPage(url) {
         selectedEta = value;
         document.querySelectorAll('.eta-btn').forEach(btn => btn.classList.remove('active'));
         el.classList.add('active');
+        setOwnerReply(value + '，请稍等');
+      }
+
+      function setOwnerReply(text) {
+        document.getElementById('ownerReplyInput').value = text.slice(0, 120);
       }
 
       async function confirmMove() {
@@ -1719,7 +1901,7 @@ function renderOwnerPage(url) {
           const res = await fetch('/api/owner-confirm', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requestId, token, eta: selectedEta })
+            body: JSON.stringify({ requestId, token, eta: selectedEta, ownerReply: document.getElementById('ownerReplyInput').value })
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || '确认失败');
@@ -1752,6 +1934,30 @@ function renderOwnerPage(url) {
         } catch(e) {
           btn.disabled = false;
           btn.innerHTML = '<span>✅</span><span>已挪车完成</span>';
+        }
+      }
+
+      async function rejectRequest() {
+        if (!confirm('确定反馈“不是我的车 / 误扫码”吗？')) return;
+        const btn = document.getElementById('rejectBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span>⏳</span><span>提交中...</span>';
+        try {
+          const reply = document.getElementById('ownerReplyInput').value || '这不是我的车，请核对车牌';
+          const res = await fetch('/api/reject-request', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId, token, ownerReply: reply })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || '提交失败');
+          btn.innerHTML = '<span>✅</span><span>已反馈误扫码</span>';
+          document.getElementById('doneMsg').classList.add('show');
+          document.getElementById('doneMsg').innerHTML = '<p>⚠️ 已通知对方核对车牌或二维码。</p>';
+        } catch(e) {
+          btn.disabled = false;
+          btn.innerHTML = '<span>⚠️</span><span>不是我的车 / 误扫码</span>';
+          document.querySelector('.subtitle').innerText = e.message || '提交失败，请重试';
         }
       }
 

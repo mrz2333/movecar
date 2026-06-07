@@ -12,6 +12,9 @@
 - 🧾 **请求隔离** — 每次扫码生成独立请求编号，避免多人同时扫码串单
 - 🔐 **确认链接保护** — 车主确认链接携带一次性 token，避免误确认
 - ⏱️ **预计到达时间** — 车主可选择“马上到 / 约3分钟 / 约5分钟”
+- 💬 **车主留言回复** — 车主可用快捷回复或自定义一句话反馈给请求者
+- ⚠️ **误扫码处理** — 车主可一键反馈“不是我的车 / 误扫码”
+- ☎️ **延迟紧急电话** — 车主 3 分钟未回应后才显示紧急联系入口，避免过早暴露电话
 - ✅ **完成状态同步** — 车主可标记“已挪车完成”，请求者页面实时更新
 - 🚫 **设备拉黑** — 车主可在确认页拉黑骚扰扫码设备，30 天内禁止再次通知
 - 🔒 **隐私保护** — 双方不暴露手机号，通过云端推送中转
@@ -70,17 +73,20 @@
 2. 填写留言（可选），如「挡住出口了」
 3. 允许获取位置（不允许则延迟 30 秒发送）
 4. 点击「通知车主」，页面显示请求编号
-5. 等待车主确认，可查看车主预计到达时间
-6. 车主标记完成后，页面显示“已处理完成”
+5. 等待车主确认，可查看车主预计到达时间和回复
+6. 若车主 3 分钟未回应，才显示“紧急联系车主”入口
+7. 车主标记完成后，页面显示“已处理完成”
 
 ### 车主
 
 1. 收到 Telegram/Bark/Pushplus/邮件推送通知
 2. 点击带 `requestId + token` 的确认链接进入车主页面
-3. 查看请求者位置（判断是否真的在车旁）
-4. 选择预计到达时间，点击确认
-5. 挪车完成后点击「已挪车完成」，请求者页面实时更新
-6. 如遇恶意反复扫码，可点击「拉黑此扫码设备」
+3. 查看请求者留言和位置；如配置 `AMAP_KEY`，会显示文字地址
+4. 选择预计到达时间，或填写一句回复
+5. 点击确认后，请求者页面显示车主回复
+6. 挪车完成后点击「已挪车完成」，请求者页面实时更新
+7. 若不是自己的车，可点击「不是我的车 / 误扫码」
+8. 如遇恶意反复扫码，可点击「拉黑此扫码设备」
 
 ### 流程图
 
@@ -133,6 +139,8 @@ echo "YOUR_TG_CHAT_ID" | wrangler secret put TG_CHAT_ID
 echo "YOUR_RESEND_API_KEY" | wrangler secret put RESEND_API_KEY
 echo "YOUR_PUSHPLUS_TOKEN" | wrangler secret put PUSHPLUS_TOKEN
 echo "YOUR_DEBUG_KEY" | wrangler secret put DEBUG_KEY
+# 可选：用于显示提交者文字地址
+# echo "YOUR_AMAP_WEB_SERVICE_KEY" | wrangler secret put AMAP_KEY
 
 # 部署
 wrangler deploy
@@ -180,7 +188,8 @@ wrangler deploy
 | `EMAIL_FROM` | Variable | 发件人（如 `MoveCar <noreply@yourdomain.com>`） | 邮件必填 |
 | `RESEND_API_KEY` | Secret | Resend API Key | 邮件必填 |
 | `DEBUG_KEY` | Secret | 调试接口密钥，用于 `/api/test-*?debug=...` | 推荐 |
-| `PHONE_NUMBER` | Variable | 备用联系电话 | 可选 |
+| `AMAP_KEY` | Secret | 高德 Web服务 Key，用于提交者位置逆地理编码 | 可选 |
+| `PHONE_NUMBER` | Variable | 备用联系电话，3 分钟未回应后才显示紧急联系入口 | 可选 |
 
 #### 获取 Telegram Bot Token
 
@@ -238,7 +247,7 @@ wrangler deploy
 # 语法检查
 node --check movecar.js
 
-# 产品核心流程测试：请求隔离、token 校验、状态流转、设备拉黑
+# 产品核心流程测试：请求隔离、token 校验、状态流转、车主回复、误扫码、设备拉黑
 node tests/movecar.test.js
 ```
 
@@ -288,6 +297,15 @@ MIT
 - 邮件服务：[Resend](https://resend.com)（推荐的事务邮件服务）
 
 ## 📝 更新日志
+
+### v1.4.0 (本 Fork)
+
+- 🧭 `/owner-confirm` 升级为车主处理台：展示请求者留言、位置地图入口和可选文字地址
+- 🗺️ 新增可选 `AMAP_KEY`：配置后使用高德逆地理编码显示提交者具体文字地址
+- 💬 新增车主快捷回复/自定义回复，请求者页面实时显示车主反馈
+- ⚠️ 新增“不是我的车 / 误扫码”状态，请求者会看到核对车牌/二维码提示
+- ☎️ 备用电话入口改为 3 分钟无回应后才显示，并增加二次确认
+- 🧪 自动测试覆盖车主回复和误扫码状态
 
 ### v1.3.2 (本 Fork)
 

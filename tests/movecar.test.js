@@ -106,13 +106,14 @@ async function run() {
     const good = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/owner-confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId: notify.requestId, token: confirmUrl.searchParams.get('token'), location: { lat: 40, lng: 116 }, eta: '约3分钟' })
+      body: JSON.stringify({ requestId: notify.requestId, token: confirmUrl.searchParams.get('token'), location: { lat: 40, lng: 116 }, eta: '约3分钟', ownerReply: '我马上到，请稍等' })
     }));
     assert.strictEqual(good.status, 200);
 
     const status = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/check-status?id=${notify.requestId}`)));
     assert.strictEqual(status.status, 'confirmed');
     assert.strictEqual(status.eta, '约3分钟');
+    assert.strictEqual(status.ownerReply, '我马上到，请稍等');
     assert.strictEqual(status.ownerLocation, null, 'requester should not receive owner location');
   }
 
@@ -137,6 +138,22 @@ async function run() {
     assert.strictEqual(blockedNotify.status, 403, 'blocked client should not be able to notify again');
     const blockedBody = await json(blockedNotify);
     assert.strictEqual(blockedBody.error, '此设备已被车主拉黑');
+  }
+
+  {
+    const worker = loadWorker();
+    const notify = await postNotify(worker, '可能扫错了', 39.9, 116.3, 'reject-client');
+    const confirmUrl = extractConfirmUrl(worker);
+    const reject = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/reject-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token: confirmUrl.searchParams.get('token'), ownerReply: '这不是我的车，请核对车牌' })
+    }));
+    assert.strictEqual(reject.status, 200, 'owner should be able to mark request as rejected');
+
+    const status = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/check-status?id=${notify.requestId}`)));
+    assert.strictEqual(status.status, 'rejected');
+    assert.strictEqual(status.ownerReply, '这不是我的车，请核对车牌');
   }
 
   console.log('✅ movecar product-flow tests passed');
