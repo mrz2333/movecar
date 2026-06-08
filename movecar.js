@@ -220,9 +220,10 @@ function transformLng(x, y) {
 
 function generateMapUrls(lat, lng) {
   const gcj = wgs84ToGcj02(lat, lng);
+  const label = encodeURIComponent('对方位置');
   return {
-    amapUrl: `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=位置`,
-    appleUrl: `https://maps.apple.com/?ll=${gcj.lat},${gcj.lng}&q=位置`
+    amapUrl: `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=${label}`,
+    appleUrl: `https://maps.apple.com/?ll=${gcj.lat},${gcj.lng}&q=${label}`
   };
 }
 
@@ -565,11 +566,22 @@ async function saveRequestData(requestId, data) {
   await MOVE_CAR_STATUS.put(requestKey(requestId, 'data'), JSON.stringify(data), { expirationTtl: CONFIG.KV_TTL });
 }
 
+async function ensureRequesterAddress(requestId, data) {
+  if (!data?.location || data.requesterAddress) return data?.requesterAddress || null;
+  const address = await reverseGeocodeLocation(data.location.lat, data.location.lng);
+  if (address) {
+    data.requesterAddress = address;
+    if (requestId) await saveRequestData(requestId, data);
+  }
+  return address || null;
+}
+
 async function handleGetLocation(url) {
   const requestId = url.searchParams.get('id');
   const data = await getRequestData(requestId);
   if (data?.location) {
-    return jsonResponse({ ...data.location, address: data.requesterAddress || null });
+    const address = await ensureRequesterAddress(requestId, data);
+    return jsonResponse({ ...data.location, address });
   }
   return jsonError('No location', 404);
 }
@@ -581,12 +593,14 @@ async function handleRequestInfo(url) {
   if (!data) return jsonError('请求不存在或已过期', 404);
   if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
 
+  const address = await ensureRequesterAddress(requestId, data);
+
   return jsonResponse({
     success: true,
     requestId,
     requestNo: requestId.slice(-4).toUpperCase(),
     message: data.message || '',
-    location: data.location ? { ...data.location, address: data.requesterAddress || null } : null,
+    location: data.location ? { ...data.location, address } : null,
     status: data.status || 'waiting',
     eta: data.eta || null,
     ownerReply: data.status === 'rejected' ? normalizeRejectedText(data.rejectedReason || data.ownerReply) : (data.ownerReply || null),
@@ -1896,7 +1910,7 @@ function renderOwnerPage(url) {
       <div id="mapArea" class="map-section">
         <p>📍 对方位置</p>
         <div id="requestAddressText" class="info-box" style="margin-bottom:12px; display:none">
-          <div class="label">位置文字</div>
+          <div class="label">📮 位置说明</div>
           <div id="requestAddressValue" class="value"></div>
         </div>
         <div class="map-links">
@@ -1970,7 +1984,9 @@ function renderOwnerPage(url) {
               document.getElementById('amapLink').href = data.location.amapUrl;
               document.getElementById('appleLink').href = data.location.appleUrl;
               document.getElementById('requestAddressText').style.display = 'block';
-              document.getElementById('requestAddressValue').innerText = data.location.address || '已获取对方位置，可打开地图查看具体位置';
+              const loc = data.location;
+              const fallbackText = '已获取对方定位，请点击下方地图按钮查看具体位置';
+              document.getElementById('requestAddressValue').innerText = loc.address || fallbackText;
             }
             renderOwnerExistingStatus(data);
           }
