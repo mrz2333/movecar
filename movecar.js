@@ -56,6 +56,21 @@ function isValidLocation(location) {
     && Math.abs(Number(location.lng)) <= 180;
 }
 
+function assertStatus(data, allowed, actionName) {
+  const current = data.status || 'waiting';
+  if (!allowed.includes(current)) {
+    return jsonError(`${actionName}失败：当前状态为 ${current}，不能执行该操作`, 409, { status: current });
+  }
+  return null;
+}
+
+function normalizeRejectedText(text) {
+  const value = String(text || '').trim();
+  const looksLikeArrival = /马上到|约\d+分钟|正在前往|请稍等|赶来|已确认/.test(value);
+  if (!value || looksLikeArrival) return '这不是我的车，请核对车牌或二维码';
+  return value.slice(0, 120);
+}
+
 function getDebugSecret() {
   return typeof DEBUG_KEY !== 'undefined' ? DEBUG_KEY : '';
 }
@@ -572,7 +587,12 @@ async function handleRequestInfo(url) {
     requestNo: requestId.slice(-4).toUpperCase(),
     message: data.message || '',
     location: data.location ? { ...data.location, address: data.requesterAddress || null } : null,
-    status: data.status || 'waiting'
+    status: data.status || 'waiting',
+    eta: data.eta || null,
+    ownerReply: data.status === 'rejected' ? normalizeRejectedText(data.rejectedReason || data.ownerReply) : (data.ownerReply || null),
+    rejectedReason: data.status === 'rejected' ? normalizeRejectedText(data.rejectedReason || data.ownerReply) : null,
+    completedAt: data.completedAt || null,
+    blockedAt: data.blockedAt || null
   });
 }
 
@@ -583,7 +603,7 @@ async function handleCheckStatus(url) {
     return jsonError('请求不存在或已过期', 404);
   }
   const rejectedText = data.status === 'rejected'
-    ? '这不是我的车，请核对车牌或二维码'
+    ? normalizeRejectedText(data.rejectedReason || data.ownerReply)
     : null;
   return jsonResponse({
     success: true,
@@ -609,6 +629,8 @@ async function handleOwnerConfirmAction(request) {
     const data = await getRequestData(requestId);
     if (!data) return jsonError('请求不存在或已过期', 404);
     if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+    const stateError = assertStatus(data, ['waiting'], '确认');
+    if (stateError) return stateError;
 
     const eta = ['马上到', '约3分钟', '约5分钟'].includes(body.eta) ? body.eta : '正在前往';
     const ownerReply = String(body.ownerReply || eta || '车主已确认，正在前往').slice(0, 120);
@@ -632,6 +654,8 @@ async function handleCompleteAction(request) {
     const data = await getRequestData(requestId);
     if (!data) return jsonError('请求不存在或已过期', 404);
     if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+    const stateError = assertStatus(data, ['confirmed'], '完成');
+    if (stateError) return stateError;
 
     data.status = 'completed';
     data.completedAt = Date.now();
@@ -651,13 +675,18 @@ async function handleBlockClientAction(request) {
     if (!data) return jsonError('请求不存在或已过期', 404);
     if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
     if (!data.clientId) return jsonError('无法识别扫码设备', 400);
+    const stateError = assertStatus(data, ['waiting'], '拉黑');
+    if (stateError) return stateError;
 
     await MOVE_CAR_STATUS.put(`blocked:${data.clientId}`, JSON.stringify({
       requestId,
       blockedAt: Date.now()
     }), { expirationTtl: 30 * 24 * 3600 });
     data.blockedAt = Date.now();
-    data.status = data.status === 'waiting' ? 'blocked' : data.status;
+    data.status = 'rejected';
+    data.ownerReply = '此扫码设备已被车主拉黑，请核对车牌或二维码';
+    data.rejectedReason = data.ownerReply;
+    data.rejectedAt = data.blockedAt;
     await saveRequestData(requestId, data);
     return jsonResponse({ success: true, blocked: true });
   } catch (error) {
@@ -673,6 +702,8 @@ async function handleRejectRequestAction(request) {
     const data = await getRequestData(requestId);
     if (!data) return jsonError('请求不存在或已过期', 404);
     if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+    const stateError = assertStatus(data, ['waiting'], '误扫码反馈');
+    if (stateError) return stateError;
 
     const ownerReply = '这不是我的车，请核对车牌或二维码';
     data.status = 'rejected';
@@ -1939,8 +1970,46 @@ function renderOwnerPage(url) {
               document.getElementById('requestAddressText').style.display = 'block';
               document.getElementById('requestAddressValue').innerText = data.location.address || '已获取对方位置，可打开地图查看具体位置';
             }
+            renderOwnerExistingStatus(data);
           }
         } catch(e) {}
+      }
+
+      function disableButtons(ids) {
+        ids.forEach(id => {
+          const btn = document.getElementById(id);
+          if (btn) btn.disabled = true;
+        });
+      }
+
+      function renderOwnerExistingStatus(data) {
+        if (!data || data.status === 'waiting') return;
+        const confirmBtn = document.getElementById('confirmBtn');
+        const rejectBtn = document.getElementById('rejectBtn');
+        const completeBtn = document.getElementById('completeBtn');
+        const doneMsg = document.getElementById('doneMsg');
+
+        if (data.status === 'confirmed') {
+          confirmBtn.disabled = true;
+          confirmBtn.innerHTML = '<span>✅</span><span>已确认，' + (data.eta || '正在前往') + '</span>';
+          rejectBtn.disabled = true;
+          document.getElementById('blockBtn').disabled = true;
+          completeBtn.classList.add('show');
+          doneMsg.classList.add('show');
+          doneMsg.innerHTML = '<p>✅ 已通知对方您正在赶来！</p>';
+        } else if (data.status === 'completed') {
+          disableButtons(['confirmBtn', 'rejectBtn', 'blockBtn', 'completeBtn']);
+          completeBtn.classList.add('show');
+          confirmBtn.innerHTML = '<span>✅</span><span>已确认</span>';
+          completeBtn.innerHTML = '<span>✅</span><span>已完成</span>';
+          doneMsg.classList.add('show');
+          doneMsg.innerHTML = '<p>✅ 该请求已完成处理。</p>';
+        } else if (data.status === 'rejected') {
+          disableButtons(['confirmBtn', 'rejectBtn', 'blockBtn', 'completeBtn']);
+          rejectBtn.innerHTML = '<span>✅</span><span>已反馈误扫码</span>';
+          doneMsg.classList.add('show');
+          doneMsg.innerHTML = '<p>⚠️ 已反馈：' + (data.rejectedReason || '请对方核对车牌或二维码') + '</p>';
+        }
       }
 
       function selectEta(value, el) {
@@ -1976,6 +2045,8 @@ function renderOwnerPage(url) {
 
           btn.innerHTML = '<span>✅</span><span>已确认，' + (data.eta || selectedEta) + '</span>';
           btn.style.background = 'linear-gradient(135deg, #9ca3af 0%, #6b7280 100%)';
+          document.getElementById('rejectBtn').disabled = true;
+          document.getElementById('blockBtn').disabled = true;
           document.getElementById('completeBtn').classList.add('show');
           document.getElementById('doneMsg').classList.add('show');
         } catch(e) {
@@ -1998,6 +2069,7 @@ function renderOwnerPage(url) {
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || '提交失败');
           btn.innerHTML = '<span>✅</span><span>已完成</span>';
+          disableButtons(['confirmBtn', 'rejectBtn', 'blockBtn', 'completeBtn']);
           document.getElementById('doneMsg').innerHTML = '<p>✅ 已通知对方挪车完成！</p>';
         } catch(e) {
           btn.disabled = false;
@@ -2019,6 +2091,7 @@ function renderOwnerPage(url) {
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || '提交失败');
           btn.innerHTML = '<span>✅</span><span>已反馈误扫码</span>';
+          disableButtons(['confirmBtn', 'rejectBtn', 'blockBtn', 'completeBtn']);
           document.getElementById('doneMsg').classList.add('show');
           document.getElementById('doneMsg').innerHTML = '<p>⚠️ 已通知对方核对车牌或二维码。</p>';
         } catch(e) {
@@ -2042,6 +2115,7 @@ function renderOwnerPage(url) {
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || '拉黑失败');
           btn.innerHTML = '<span>✅</span><span>已拉黑此设备</span>';
+          disableButtons(['confirmBtn', 'rejectBtn', 'blockBtn', 'completeBtn']);
           document.getElementById('doneMsg').classList.add('show');
           document.getElementById('doneMsg').innerHTML = '<p>🚫 已拉黑该扫码设备，30天内将无法再次通知。</p>';
         } catch(e) {

@@ -158,6 +158,76 @@ async function run() {
     assert.notStrictEqual(status.ownerReply, '我马上到，请稍等', 'rejected status must never reuse arrival reply');
   }
 
+  {
+    const worker = loadWorker();
+    const notify = await postNotify(worker, '状态机测试', 39.9, 116.3, 'state-client-a');
+    const confirmUrl = extractConfirmUrl(worker);
+    const token = confirmUrl.searchParams.get('token');
+
+    const completedFromWaiting = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token })
+    }));
+    assert.strictEqual(completedFromWaiting.status, 409, 'waiting request must not be completed directly');
+
+    const reject = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/reject-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token })
+    }));
+    assert.strictEqual(reject.status, 200);
+
+    const confirmAfterReject = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/owner-confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token, eta: '马上到', ownerReply: '我马上到，请稍等' })
+    }));
+    assert.strictEqual(confirmAfterReject.status, 409, 'rejected request must not be confirmed later');
+
+    const finalStatus = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/check-status?id=${notify.requestId}`)));
+    assert.strictEqual(finalStatus.status, 'rejected');
+    assert.strictEqual(finalStatus.ownerReply, '这不是我的车，请核对车牌或二维码');
+  }
+
+  {
+    const worker = loadWorker();
+    const notify = await postNotify(worker, '确认后状态机测试', 39.9, 116.3, 'state-client-b');
+    const confirmUrl = extractConfirmUrl(worker);
+    const token = confirmUrl.searchParams.get('token');
+
+    const confirm = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/owner-confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token, eta: '马上到', ownerReply: '我马上到，请稍等' })
+    }));
+    assert.strictEqual(confirm.status, 200);
+
+    const rejectAfterConfirm = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/reject-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token })
+    }));
+    assert.strictEqual(rejectAfterConfirm.status, 409, 'confirmed request must not be rejected later');
+
+    const complete = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token })
+    }));
+    assert.strictEqual(complete.status, 200);
+
+    const rejectAfterComplete = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/reject-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: notify.requestId, token })
+    }));
+    assert.strictEqual(rejectAfterComplete.status, 409, 'completed request must not be rejected later');
+
+    const finalStatus = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/check-status?id=${notify.requestId}`)));
+    assert.strictEqual(finalStatus.status, 'completed');
+  }
+
   console.log('✅ movecar product-flow tests passed');
 }
 
