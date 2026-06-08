@@ -582,16 +582,20 @@ async function handleCheckStatus(url) {
   if (!data) {
     return jsonError('请求不存在或已过期', 404);
   }
+  const rejectedText = data.status === 'rejected'
+    ? '这不是我的车，请核对车牌或二维码'
+    : null;
   return jsonResponse({
     success: true,
     requestId,
     requestNo: requestId.slice(-4).toUpperCase(),
     status: data.status || 'waiting',
+    confirmed: data.status === 'confirmed' || data.status === 'completed',
     eta: data.eta || null,
     completedAt: data.completedAt || null,
     notifications: data.notifications || null,
-    ownerReply: data.ownerReply || null,
-    rejectedReason: data.rejectedReason || null,
+    ownerReply: rejectedText || data.ownerReply || null,
+    rejectedReason: rejectedText,
     requesterAddress: data.requesterAddress || null,
     ownerLocation: null
   });
@@ -670,7 +674,7 @@ async function handleRejectRequestAction(request) {
     if (!data) return jsonError('请求不存在或已过期', 404);
     if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
 
-    const ownerReply = String(body.ownerReply || '这可能不是我的车，请核对车牌或二维码').slice(0, 120);
+    const ownerReply = '这不是我的车，请核对车牌或二维码';
     data.status = 'rejected';
     data.ownerReply = ownerReply;
     data.rejectedReason = ownerReply;
@@ -1486,7 +1490,7 @@ function renderMainPage(origin) {
           icon.innerText = '⚠️';
           title.innerText = '车主反馈：可能扫错了';
           waiting.innerText = '车主反馈：可能扫错了 ⚠️';
-          text.innerText = data.ownerReply || '这可能不是对应车辆，请核对车牌或二维码';
+          text.innerText = data.rejectedReason || '这不是我的车，请核对车牌或二维码';
           actionHint.innerText = '请先核对车牌/二维码；如确认无误，可再提醒一次';
           clearInterval(checkTimer);
           return true;
@@ -1875,7 +1879,6 @@ function renderOwnerPage(url) {
           <button class="quick-reply" onclick="setOwnerReply('我马上到，请稍等')">我马上到</button>
           <button class="quick-reply" onclick="setOwnerReply('约3分钟到，请稍等')">约3分钟</button>
           <button class="quick-reply" onclick="setOwnerReply('约5分钟到，请稍等')">约5分钟</button>
-          <button class="quick-reply" onclick="setOwnerReply('这不是我的车，请核对车牌')">不是我的车</button>
         </div>
       </div>
 
@@ -2008,11 +2011,10 @@ function renderOwnerPage(url) {
         btn.disabled = true;
         btn.innerHTML = '<span>⏳</span><span>提交中...</span>';
         try {
-          const reply = document.getElementById('ownerReplyInput').value || '这不是我的车，请核对车牌';
           const res = await fetch('/api/reject-request', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requestId, token, ownerReply: reply })
+            body: JSON.stringify({ requestId, token })
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || '提交失败');

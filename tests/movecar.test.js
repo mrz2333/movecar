@@ -147,13 +147,15 @@ async function run() {
     const reject = await worker.sandbox.handleRequest(new Request('https://movecar.test/api/reject-request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId: notify.requestId, token: confirmUrl.searchParams.get('token'), ownerReply: '这不是我的车，请核对车牌' })
+      body: JSON.stringify({ requestId: notify.requestId, token: confirmUrl.searchParams.get('token'), ownerReply: '我马上到，请稍等' })
     }));
     assert.strictEqual(reject.status, 200, 'owner should be able to mark request as rejected');
 
     const status = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/check-status?id=${notify.requestId}`)));
     assert.strictEqual(status.status, 'rejected');
-    assert.strictEqual(status.ownerReply, '这不是我的车，请核对车牌');
+    assert.strictEqual(status.ownerReply, '这不是我的车，请核对车牌或二维码');
+    assert.strictEqual(status.rejectedReason, '这不是我的车，请核对车牌或二维码');
+    assert.notStrictEqual(status.ownerReply, '我马上到，请稍等', 'rejected status must never reuse arrival reply');
   }
 
   console.log('✅ movecar product-flow tests passed');

@@ -106,12 +106,12 @@ vm.runInContext(script, sandbox);
   assert.strictEqual(elements.phoneBtn.classList.contains('show'), true, 'rescheduled phone timer should still show after 3 minutes');
 
   sandbox.scheduleEmergencyPhone();
-  statusResponse = { status: 'rejected', ownerReply: '这不是我的车，请核对车牌' };
+  statusResponse = { status: 'rejected', ownerReply: '我马上到，请稍等' };
   await advance(180000);
   assert.strictEqual(elements.phoneBtn.classList.contains('show'), false, 'phone should not flash when latest status is rejected');
   assert.strictEqual(elements.ownerFeedbackIcon.innerText, '⚠️');
   assert.strictEqual(elements.ownerFeedbackTitle.innerText, '车主反馈：可能扫错了');
-  assert.strictEqual(elements.ownerFeedbackText.innerText, '这不是我的车，请核对车牌');
+  assert.strictEqual(elements.ownerFeedbackText.innerText, '这不是我的车，请核对车牌或二维码');
   assert.strictEqual(elements.waitingText.innerText, '车主反馈：可能扫错了 ⚠️');
   assert.strictEqual(elements.ownerFeedback.classList.contains('hidden'), false);
 
