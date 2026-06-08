@@ -153,8 +153,8 @@ async function run() {
 
     const status = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/check-status?id=${notify.requestId}`)));
     assert.strictEqual(status.status, 'rejected');
-    assert.strictEqual(status.ownerReply, '这不是我的车，请核对车牌或二维码');
-    assert.strictEqual(status.rejectedReason, '这不是我的车，请核对车牌或二维码');
+    assert.strictEqual(status.ownerReply, '这可能不是对应车辆，请核对车牌、车辆位置和二维码');
+    assert.strictEqual(status.rejectedReason, '这可能不是对应车辆，请核对车牌、车辆位置和二维码');
     assert.notStrictEqual(status.ownerReply, '我马上到，请稍等', 'rejected status must never reuse arrival reply');
   }
 
@@ -187,7 +187,7 @@ async function run() {
 
     const finalStatus = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/check-status?id=${notify.requestId}`)));
     assert.strictEqual(finalStatus.status, 'rejected');
-    assert.strictEqual(finalStatus.ownerReply, '这不是我的车，请核对车牌或二维码');
+    assert.strictEqual(finalStatus.ownerReply, '这可能不是对应车辆，请核对车牌、车辆位置和二维码');
   }
 
   {

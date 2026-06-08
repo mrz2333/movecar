@@ -67,7 +67,7 @@ function assertStatus(data, allowed, actionName) {
 function normalizeRejectedText(text) {
   const value = String(text || '').trim();
   const looksLikeArrival = /马上到|约\d+分钟|正在前往|请稍等|赶来|已确认/.test(value);
-  if (!value || looksLikeArrival) return '这不是我的车，请核对车牌或二维码';
+  if (!value || looksLikeArrival) return '这可能不是对应车辆，请核对车牌、车辆位置和二维码';
   return value.slice(0, 120);
 }
 
@@ -684,7 +684,7 @@ async function handleBlockClientAction(request) {
     }), { expirationTtl: 30 * 24 * 3600 });
     data.blockedAt = Date.now();
     data.status = 'rejected';
-    data.ownerReply = '此扫码设备已被车主拉黑，请核对车牌或二维码';
+    data.ownerReply = '这可能不是对应车辆，请核对车牌、车辆位置和二维码';
     data.rejectedReason = data.ownerReply;
     data.rejectedAt = data.blockedAt;
     await saveRequestData(requestId, data);
@@ -702,10 +702,10 @@ async function handleRejectRequestAction(request) {
     const data = await getRequestData(requestId);
     if (!data) return jsonError('请求不存在或已过期', 404);
     if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
-    const stateError = assertStatus(data, ['waiting'], '误扫码反馈');
+    const stateError = assertStatus(data, ['waiting'], '车码不匹配反馈');
     if (stateError) return stateError;
 
-    const ownerReply = '这不是我的车，请核对车牌或二维码';
+    const ownerReply = '这可能不是对应车辆，请核对车牌、车辆位置和二维码';
     data.status = 'rejected';
     data.ownerReply = ownerReply;
     data.rejectedReason = ownerReply;
@@ -1502,6 +1502,7 @@ function renderMainPage(origin) {
         document.getElementById('ownerFeedbackTitle').innerText = '车主已收到通知';
         document.getElementById('ownerFeedbackText').innerText = '正在赶来，请在车旁稍等';
         document.getElementById('actionHint').innerText = '车主暂未回应时，可再次提醒';
+        document.getElementById('retryBtn').style.display = '';
       }
 
       function applyOwnerStatus(data) {
@@ -1519,10 +1520,11 @@ function renderMainPage(origin) {
 
         if (data.status === 'rejected') {
           icon.innerText = '⚠️';
-          title.innerText = '车主反馈：可能扫错了';
-          waiting.innerText = '车主反馈：可能扫错了 ⚠️';
-          text.innerText = data.rejectedReason || '这不是我的车，请核对车牌或二维码';
-          actionHint.innerText = '请先核对车牌/二维码；如确认无误，可再提醒一次';
+          title.innerText = '车主反馈：车码可能不匹配';
+          waiting.innerText = '车主反馈：车码可能不匹配 ⚠️';
+          text.innerText = data.rejectedReason || '这可能不是对应车辆，请核对车牌、车辆位置和二维码';
+          actionHint.innerText = '请先核对车牌、车辆位置和二维码；确认无误后可重新扫码提交';
+          document.getElementById('retryBtn').style.display = 'none';
           clearInterval(checkTimer);
           return true;
         }
@@ -1926,7 +1928,7 @@ function renderOwnerPage(url) {
 
       <button id="rejectBtn" class="btn btn-reject" onclick="rejectRequest()">
         <span>⚠️</span>
-        <span>不是我的车 / 误扫码</span>
+        <span>不是我的车 / 车码不匹配</span>
       </button>
 
       <button id="completeBtn" class="btn btn-complete" onclick="completeMove()">
@@ -2006,9 +2008,9 @@ function renderOwnerPage(url) {
           doneMsg.innerHTML = '<p>✅ 该请求已完成处理。</p>';
         } else if (data.status === 'rejected') {
           disableButtons(['confirmBtn', 'rejectBtn', 'blockBtn', 'completeBtn']);
-          rejectBtn.innerHTML = '<span>✅</span><span>已反馈误扫码</span>';
+          rejectBtn.innerHTML = '<span>✅</span><span>已反馈车码不匹配</span>';
           doneMsg.classList.add('show');
-          doneMsg.innerHTML = '<p>⚠️ 已反馈：' + (data.rejectedReason || '请对方核对车牌或二维码') + '</p>';
+          doneMsg.innerHTML = '<p>⚠️ 已反馈：' + (data.rejectedReason || '请对方核对车牌、车辆位置和二维码') + '</p>';
         }
       }
 
@@ -2078,7 +2080,7 @@ function renderOwnerPage(url) {
       }
 
       async function rejectRequest() {
-        if (!confirm('确定反馈“不是我的车 / 误扫码”吗？')) return;
+        if (!confirm('确定反馈“不是我的车 / 车码不匹配”吗？')) return;
         const btn = document.getElementById('rejectBtn');
         btn.disabled = true;
         btn.innerHTML = '<span>⏳</span><span>提交中...</span>';
@@ -2090,13 +2092,13 @@ function renderOwnerPage(url) {
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || '提交失败');
-          btn.innerHTML = '<span>✅</span><span>已反馈误扫码</span>';
+          btn.innerHTML = '<span>✅</span><span>已反馈车码不匹配</span>';
           disableButtons(['confirmBtn', 'rejectBtn', 'blockBtn', 'completeBtn']);
           document.getElementById('doneMsg').classList.add('show');
-          document.getElementById('doneMsg').innerHTML = '<p>⚠️ 已通知对方核对车牌或二维码。</p>';
+          document.getElementById('doneMsg').innerHTML = '<p>⚠️ 已通知对方核对车牌、车辆位置和二维码。</p>';
         } catch(e) {
           btn.disabled = false;
-          btn.innerHTML = '<span>⚠️</span><span>不是我的车 / 误扫码</span>';
+          btn.innerHTML = '<span>⚠️</span><span>不是我的车 / 车码不匹配</span>';
           document.querySelector('.subtitle').innerText = e.message || '提交失败，请重试';
         }
       }
