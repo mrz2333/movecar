@@ -151,6 +151,8 @@ echo "YOUR_PUSHPLUS_TOKEN" | wrangler secret put PUSHPLUS_TOKEN
 echo "YOUR_DEBUG_KEY" | wrangler secret put DEBUG_KEY
 # 可选：用于显示提交者文字地址
 # echo "YOUR_AMAP_WEB_SERVICE_KEY" | wrangler secret put AMAP_KEY
+# 可选：海外开发/测试 IP 白名单，多个 IP 用英文逗号分隔；不要写入公开仓库
+# 在 wrangler.toml 的 [vars] 中配置：TEST_IP_ALLOWLIST = "203.0.113.10,2001:db8::10"
 
 # 部署
 wrangler deploy
@@ -199,6 +201,7 @@ wrangler deploy
 | `RESEND_API_KEY` | Secret | Resend API Key | 邮件必填 |
 | `DEBUG_KEY` | Secret | 调试接口密钥，用于 `/api/test-*?debug=...` | 推荐 |
 | `AMAP_KEY` | Secret | 高德 Web服务 Key，用于提交者位置逆地理编码 | 可选 |
+| `TEST_IP_ALLOWLIST` | Variable | 海外开发/测试 IP 白名单，逗号分隔；不要提交真实值到公开仓库 | 可选 |
 | `PHONE_NUMBER` | Variable | 备用联系电话，3 分钟未回应后才显示紧急联系入口 | 可选 |
 
 #### 获取 Telegram Bot Token

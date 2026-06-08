@@ -75,6 +75,16 @@ function getDebugSecret() {
   return typeof DEBUG_KEY !== 'undefined' ? DEBUG_KEY : '';
 }
 
+function isAllowedTestIp(ip) {
+  const list = typeof TEST_IP_ALLOWLIST !== 'undefined' ? String(TEST_IP_ALLOWLIST) : '';
+  if (!ip || !list.trim()) return false;
+  return list
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+    .includes(ip);
+}
+
 async function handleRequest(request) {
   const url = new URL(request.url);
   const debugKey = url.searchParams.get('debug');
@@ -126,9 +136,10 @@ async function handleRequest(request) {
     }
   }
   
-  // 限制只允许中国大陆访问（debug 模式可跳过）
+  // 限制只允许中国大陆访问（debug 模式或测试 IP 白名单可跳过）
   const country = request.cf?.country;
-  if (country && country !== 'CN' && !isDebug) {
+  const clientIp = request.headers.get('CF-Connecting-IP') || '';
+  if (country && country !== 'CN' && !isDebug && !isAllowedTestIp(clientIp)) {
     return new Response(JSON.stringify({
       error: '此服务仅限中国大陆访问',
       message: 'This service is only available in mainland China'

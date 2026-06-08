@@ -18,5 +18,7 @@ kv_namespaces = [
 EMAIL_TO = "your-email@example.com"
 EMAIL_FROM = "MoveCar <movecar@your-domain.com>"
 PHONE_NUMBER = "your-phone-number"
+# 海外开发/测试 IP 白名单，多个 IP 用英文逗号分隔；生产可留空或删除
+TEST_IP_ALLOWLIST = "203.0.113.10,2001:db8::10"
 # TG_BOT_TOKEN、TG_CHAT_ID、RESEND_API_KEY、DEBUG_KEY、AMAP_KEY 通过 wrangler secret 设置
 # AMAP_KEY 可选：高德 Web服务 Key，用于在车主确认页显示提交者文字地址
