@@ -35,6 +35,7 @@ const elements = {
   ownerFeedbackText: el({ innerText: '正在赶来，请在车旁稍等' }),
   waitingText: el({ innerText: '正在等待车主回应...' }),
   actionHint: el({ innerText: '车主暂未回应时，可再次提醒' }),
+  retryBtn: el({ style: {} }),
 };
 
 elements.ownerFeedback.classList.add('hidden');
@@ -110,9 +111,11 @@ vm.runInContext(script, sandbox);
   await advance(180000);
   assert.strictEqual(elements.phoneBtn.classList.contains('show'), false, 'phone should not flash when latest status is rejected');
   assert.strictEqual(elements.ownerFeedbackIcon.innerText, '⚠️');
-  assert.strictEqual(elements.ownerFeedbackTitle.innerText, '车主反馈：可能扫错了');
-  assert.strictEqual(elements.ownerFeedbackText.innerText, '这不是我的车，请核对车牌或二维码');
-  assert.strictEqual(elements.waitingText.innerText, '车主反馈：可能扫错了 ⚠️');
+  assert.strictEqual(elements.ownerFeedbackTitle.innerText, '车主反馈：车码可能不匹配');
+  assert.strictEqual(elements.ownerFeedbackText.innerText, '这可能不是对应车辆，请核对车牌、车辆位置和二维码');
+  assert.strictEqual(elements.waitingText.innerText, '车主反馈：车码可能不匹配 ⚠️');
+  assert.strictEqual(elements.actionHint.innerText, '请先核对车牌、车辆位置和二维码；确认无误后可重新扫码提交');
+  assert.strictEqual(elements.retryBtn.style.display, 'none');
   assert.strictEqual(elements.ownerFeedback.classList.contains('hidden'), false);
 
   console.log('✅ frontend emergency phone timer tests passed');
