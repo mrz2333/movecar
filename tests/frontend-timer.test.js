@@ -118,6 +118,14 @@ vm.runInContext(script, sandbox);
   assert.strictEqual(elements.retryBtn.style.display, 'none');
   assert.strictEqual(elements.ownerFeedback.classList.contains('hidden'), false);
 
+  sandbox.resetRequesterStatusUI();
+  sandbox.applyOwnerStatus({ status: 'confirmed', eta: '约3分钟', ownerReply: '我马上到，请稍等' });
+  assert.strictEqual(elements.ownerFeedbackTitle.innerText, '车主已确认');
+  assert.strictEqual(elements.ownerFeedbackText.innerText, '我马上到，请稍等');
+  assert.strictEqual(elements.waitingText.innerText, '我马上到，请稍等');
+  assert.strictEqual(elements.actionHint.innerText, '车主已回应，请耐心等待');
+  assert.strictEqual(elements.ownerFeedback.classList.contains('hidden'), false);
+
   console.log('✅ frontend emergency phone timer tests passed');
 })().catch(err => {
   console.error(err);

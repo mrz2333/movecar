@@ -3,7 +3,7 @@ addEventListener('fetch', event => {
 })
 
 const CONFIG = {
-  KV_TTL: 3600,
+  KV_TTL: 86400,
   COOLDOWN_MS: 60000,
 }
 
@@ -255,6 +255,39 @@ async function reverseGeocodeLocation(lat, lng) {
   return null;
 }
 
+// GCJ-02 坐标直接逆地理编码（腾讯地图返回的已经是 GCJ-02，不需要再转换）
+async function reverseGeocodeGcj02(lat, lng) {
+  // 优先使用腾讯地图 API
+  const qqKey = typeof QQ_MAP_KEY !== 'undefined' ? QQ_MAP_KEY : '';
+  try {
+    const api = `https://apis.map.qq.com/ws/geocoder/v1/?key=${qqKey}&location=${lat},${lng}&output=json&referer=movecar.563366.xyz`;
+    const res = await fetch(api, { headers: { 'Referer': 'https://movecar.563366.xyz/' } });
+    const data = await res.json();
+    if (data.status === 0 && data.result?.formatted_addresses?.recommend) {
+      return data.result.formatted_addresses.recommend;
+    }
+    if (data.status === 0 && data.result?.address) {
+      return data.result.address;
+    }
+  } catch (error) {
+    console.error('QQ Map reverse geocode failed:', error.message);
+  }
+  // 降级到高德（坐标已是 GCJ-02，直接传）
+  const amapKey = typeof AMAP_KEY !== 'undefined' ? AMAP_KEY : '';
+  if (!amapKey) return null;
+  try {
+    const api = `https://restapi.amap.com/v3/geocode/regeo?key=${encodeURIComponent(amapKey)}&location=${lng},${lat}&extensions=base&radius=1000`;
+    const res = await fetch(api);
+    const data = await res.json();
+    if (data.status === '1' && data.regeocode?.formatted_address) {
+      return data.regeocode.formatted_address;
+    }
+  } catch (error) {
+    console.error('Amap GCJ-02 reverse geocode failed:', error.message);
+  }
+  return null;
+}
+
 // Telegram Bot 推送
 async function sendTelegram(message, confirmUrl, location) {
   try {
@@ -270,9 +303,11 @@ async function sendTelegram(message, confirmUrl, location) {
     let text = `🚗 <b>挪车请求</b>\n`;
     if (message) text += `\n💬 留言: ${escapeHtml(message)}`;
     
-    // 添加位置信息（直接使用原始坐标，浏览器在中国返回的已经是 GCJ02）
+    // 添加位置信息
     if (isValidLocation(location)) {
-      const amapUrl = `https://uri.amap.com/marker?position=${location.lng},${location.lat}&name=挪车位置`;
+      const isGcj02 = location.coordSystem === 'gcj02';
+      const gcj = isGcj02 ? { lat: location.lat, lng: location.lng } : wgs84ToGcj02(location.lat, location.lng);
+      const amapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
       text += `\n\n📍 <a href="${amapUrl}">点击查看位置</a>`;
     }
     
@@ -349,14 +384,6 @@ async function sendEmail(subject, message, location, confirmUrl) {
       return { sent: false, reason: 'not_configured' };
     }
     
-    // HTML 转义函数（防止 XSS）
-    const escapeHtml = (str) => str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-    
     // 解析留言内容
     const rawBody = message || '车旁有人等待';
     const textBody = rawBody.replace(/\\n/g, '\n');
@@ -366,7 +393,8 @@ async function sendEmail(subject, message, location, confirmUrl) {
     let locationHtml = '';
     let locationText = '';
     if (location && location.lat && location.lng) {
-      const gcj = wgs84ToGcj02(location.lat, location.lng);
+      const isGcj02 = location.coordSystem === 'gcj02';
+      const gcj = isGcj02 ? { lat: location.lat, lng: location.lng } : wgs84ToGcj02(location.lat, location.lng);
       const amapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
       locationHtml = `
         <div style="margin: 20px 0; padding: 16px; background: #f0f9ff; border-radius: 12px; border-left: 4px solid #0093E9;">
@@ -443,11 +471,14 @@ async function handleNotify(request, url) {
     const body = await request.json();
     const message = String(body.message || '车旁有人等待').slice(0, 200);
     const location = isValidLocation(body.location)
-      ? { lat: Number(body.location.lat), lng: Number(body.location.lng) }
+      ? { lat: Number(body.location.lat), lng: Number(body.location.lng), coordSystem: body.location.coordSystem || 'wgs84' }
       : null;
     const delayed = body.delayed || false;
     const now = Date.now();
-    const clientId = String(body.clientId || '').slice(0, 80).replace(/[^a-zA-Z0-9_-]/g, '') || 'anonymous';
+    const clientId = String(body.clientId || '').slice(0, 80).replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!clientId) {
+      return jsonError('缺少客户端标识，请刷新页面重试', 400);
+    }
     const blockKey = `blocked:${clientId}`;
     if (await MOVE_CAR_STATUS.get(blockKey)) {
       return jsonError('此设备已被车主拉黑', 403);
@@ -471,7 +502,7 @@ async function handleNotify(request, url) {
     const publicRequestNo = requestId.slice(-4).toUpperCase();
 
     let notifyBody = `🚗 挪车请求 #${publicRequestNo}`;
-    if (message) notifyBody += `\\n💬 留言: ${message}`;
+    if (message) notifyBody += `\n💬 留言: ${message}`;
 
     const requestData = {
       requestId,
@@ -491,16 +522,21 @@ async function handleNotify(request, url) {
     };
 
     if (location) {
-      const urls = generateMapUrls(location.lat, location.lng);
-      notifyBody += '\\n📍 已附带位置信息，点击查看';
+      const isGcj02 = location.coordSystem === 'gcj02';
+      const urls = isGcj02
+        ? { amapUrl: `https://uri.amap.com/marker?position=${location.lng},${location.lat}&name=位置`, appleUrl: `https://maps.apple.com/?ll=${location.lat},${location.lng}&q=位置` }
+        : generateMapUrls(location.lat, location.lng);
+      notifyBody += `\n📍 已附带位置信息，点击查看`;
       requestData.location = {
         lat: location.lat,
         lng: location.lng,
         ...urls
       };
-      requestData.requesterAddress = await reverseGeocodeLocation(location.lat, location.lng);
+      requestData.requesterAddress = isGcj02
+        ? await reverseGeocodeGcj02(location.lat, location.lng)
+        : await reverseGeocodeLocation(location.lat, location.lng);
     } else {
-      notifyBody += '\\n⚠️ 未提供位置信息';
+      notifyBody += `\n⚠️ 未提供位置信息`;
     }
 
     await MOVE_CAR_STATUS.put(requestKey(requestId, 'data'), JSON.stringify(requestData), { expirationTtl: CONFIG.KV_TTL });
@@ -515,7 +551,8 @@ async function handleNotify(request, url) {
     let pushplusContent = `<h2>🚗 挪车请求 #${publicRequestNo}</h2>`;
     if (message) pushplusContent += `<p>💬 留言: ${escapeHtml(message)}</p>`;
     if (location) {
-      const gcj = wgs84ToGcj02(location.lat, location.lng);
+      const isGcj02 = location.coordSystem === 'gcj02';
+      const gcj = isGcj02 ? { lat: location.lat, lng: location.lng } : wgs84ToGcj02(location.lat, location.lng);
       const amapUrl = `https://uri.amap.com/marker?position=${gcj.lng},${gcj.lat}&name=挪车位置`;
       pushplusContent += `<p>📍 <a href="${amapUrl}">点击查看位置</a></p>`;
     }
@@ -589,8 +626,11 @@ async function ensureRequesterAddress(requestId, data) {
 
 async function handleGetLocation(url) {
   const requestId = url.searchParams.get('id');
+  const token = url.searchParams.get('token');
   const data = await getRequestData(requestId);
-  if (data?.location) {
+  if (!data) return jsonError('No location', 404);
+  if (!token || token !== data.token) return jsonError('确认链接无效或已过期', 403);
+  if (data.location) {
     const address = await ensureRequesterAddress(requestId, data);
     return jsonResponse({ ...data.location, address });
   }
@@ -638,7 +678,6 @@ async function handleCheckStatus(url) {
     confirmed: data.status === 'confirmed' || data.status === 'completed',
     eta: data.eta || null,
     completedAt: data.completedAt || null,
-    notifications: data.notifications || null,
     ownerReply: rejectedText || data.ownerReply || null,
     rejectedReason: rejectedText,
     requesterAddress: data.requesterAddress || null,
@@ -1228,6 +1267,8 @@ function renderMainPage(origin) {
         }
       }
     </style>
+    <script src="https://3gimg.qq.com/lightmap/components/geolocation/geolocation.min.js"></script>
+    <script>window.QQ_MAP_KEY = ${JSON.stringify(typeof QQ_MAP_KEY !== 'undefined' ? QQ_MAP_KEY : '').replace(/<\//g, '<\\/')};</script>
   </head>
   <body>
     <div id="toast" class="toast"></div>
@@ -1348,6 +1389,10 @@ function renderMainPage(origin) {
         updateNotifyButton();
       }
 
+      function isWechatBrowser() {
+        return /MicroMessenger/i.test(navigator.userAgent);
+      }
+
       function requestLocation() {
         hideModal('locationTipModal');
         const icon = document.getElementById('locIcon');
@@ -1357,7 +1402,11 @@ function renderMainPage(origin) {
         txt.className = 'loc-status';
         txt.innerText = '正在获取定位...';
 
-        if ('geolocation' in navigator) {
+        if (isWechatBrowser()) {
+          // 微信内置浏览器：使用腾讯地图 H5 定位组件
+          requestLocationViaQQMap(icon, txt);
+        } else if ('geolocation' in navigator) {
+          // 非微信环境：使用浏览器原生定位
           navigator.geolocation.getCurrentPosition(
             (pos) => {
               userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -1382,6 +1431,71 @@ function renderMainPage(origin) {
           txt.innerText = '浏览器不支持定位，将等待30秒后通知';
           updateNotifyButton();
         }
+      }
+
+      function requestLocationViaQQMap(icon, txt) {
+        if (typeof qq === 'undefined' || !qq.maps || !qq.maps.Geolocation) {
+          // 腾讯地图 SDK 未加载，降级到浏览器定位
+          console.warn('QQ Maps Geolocation not available, fallback to navigator.geolocation');
+          if ('geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                icon.className = 'loc-icon success';
+                txt.className = 'loc-status success';
+                txt.innerText = '已获取位置 ✓，将立即通知车主';
+                updateNotifyButton();
+              },
+              () => { onLocationFailed(icon, txt); },
+              { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+          } else {
+            onLocationFailed(icon, txt);
+          }
+          return;
+        }
+
+        var geo = new qq.maps.Geolocation(typeof QQ_MAP_KEY !== 'undefined' ? QQ_MAP_KEY : '', "movecar");
+        geo.getLocation(
+          function(position) {
+            // 腾讯地图返回的是 GCJ-02 坐标，后端已有 WGS84→GCJ02 转换
+            // 但因为已经是 GCJ-02，需要逆转换或直接标记为 GCJ-02
+            // 这里直接使用，因为高德地图链接也是 GCJ-02
+            userLocation = { lat: position.lat, lng: position.lng, coordSystem: 'gcj02' };
+            icon.className = 'loc-icon success';
+            txt.className = 'loc-status success';
+            txt.innerText = '已获取位置 ✓，将立即通知车主';
+            updateNotifyButton();
+          },
+          function(err) {
+            console.error('QQ Maps Geolocation error:', err);
+            // 失败时降级到浏览器定位
+            if ('geolocation' in navigator) {
+              navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                  userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                  icon.className = 'loc-icon success';
+                  txt.className = 'loc-status success';
+                  txt.innerText = '已获取位置 ✓，将立即通知车主';
+                  updateNotifyButton();
+                },
+                () => { onLocationFailed(icon, txt); },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+              );
+            } else {
+              onLocationFailed(icon, txt);
+            }
+          },
+          { timeout: 10000 }
+        );
+      }
+
+      function onLocationFailed(icon, txt) {
+        userLocation = null;
+        icon.className = 'loc-icon error';
+        txt.className = 'loc-status error';
+        txt.innerText = '位置获取失败，点此可重试；不分享也可通知';
+        updateNotifyButton();
       }
 
       function addTag(text) {
@@ -1466,6 +1580,12 @@ function renderMainPage(origin) {
             document.getElementById('mainView').style.display = 'none';
             document.getElementById('successView').style.display = 'flex';
             resetRequesterStatusUI('正在等待车主回应...');
+            try {
+              const latest = await fetchLatestStatus();
+              if (!applyOwnerStatus(latest)) {
+                renderRequesterWaitingState(latest || { requestNo: data.requestNo, status: 'waiting' });
+              }
+            } catch (e) {}
             scheduleEmergencyPhone();
             startPolling(activeRequestId);
           } else {
@@ -1530,6 +1650,19 @@ function renderMainPage(origin) {
         document.getElementById('retryBtn').style.display = '';
       }
 
+      function renderRequesterWaitingState(data) {
+        if (!data || data.status !== 'waiting') return false;
+        const waiting = document.getElementById('waitingText');
+        const actionHint = document.getElementById('actionHint');
+        if (data.requestNo) {
+          waiting.innerText = '请求 #' + data.requestNo + ' 已发送，正在等待车主回应...';
+        }
+        if (data.requesterAddress) {
+          actionHint.innerText = '已附带位置：' + data.requesterAddress;
+        }
+        return true;
+      }
+
       function applyOwnerStatus(data) {
         if (!data || !['confirmed', 'completed', 'rejected'].includes(data.status)) return false;
 
@@ -1566,7 +1699,7 @@ function renderMainPage(origin) {
 
         icon.innerText = '🎉';
         title.innerText = '车主已确认';
-        waiting.innerText = '车主已确认，' + (data.eta || '正在前往') + '...';
+        waiting.innerText = data.ownerReply || ('车主已确认，' + (data.eta || '正在前往') + '...');
         text.innerText = data.ownerReply || ((data.eta || '正在前往') + '，请在车旁稍等');
         actionHint.innerText = '车主已回应，请耐心等待';
         return true;
@@ -1577,14 +1710,20 @@ function renderMainPage(origin) {
         let count = 0;
         checkTimer = setInterval(async () => {
           count++;
-          if (count > 120) { clearInterval(checkTimer); return; }
+          if (count > 300) { clearInterval(checkTimer); return; }
           try {
             const res = await fetch('/api/check-status?id=' + encodeURIComponent(requestId));
             const data = await res.json();
-            if (applyOwnerStatus(data)) {
+            if (!applyOwnerStatus(data)) {
+              renderRequesterWaitingState(data);
+            } else {
               if(navigator.vibrate) navigator.vibrate([200, 100, 200]);
             }
-          } catch(e) {}
+          } catch(e) {
+            if (count === 1 || count % 10 === 0) {
+              showToast('状态同步稍有延迟，正在重试...');
+            }
+          }
         }, 3000);
       }
 
@@ -1972,8 +2111,8 @@ function renderOwnerPage(url) {
     </div>
 
     <script>
-      const requestId = '${requestId.replace(/'/g, '')}';
-      const token = '${token.replace(/'/g, '')}';
+      const requestId = ${JSON.stringify(requestId).replace(/<\//g, '<\\/')};
+      const token = ${JSON.stringify(token).replace(/<\//g, '<\\/')};
       let selectedEta = '马上到';
 
       window.onload = async () => {

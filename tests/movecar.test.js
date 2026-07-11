@@ -33,13 +33,28 @@ function loadWorker() {
     DEBUG_KEY: 'debug-test-key',
     fetch: async (url, init = {}) => {
       const target = String(url);
-      if (target.includes('api.telegram.org')) sent.telegram.push({ url: target, init });
-      else if (target.includes('api.resend.com')) sent.email.push({ url: target, init });
-      else if (target.includes('pushplus.plus')) sent.pushplus.push({ url: target, init });
-      return new Response(JSON.stringify({ ok: true, code: 200, id: 'mock-id' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      if (target.includes('api.telegram.org')) {
+        sent.telegram.push({ url: target, init });
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (target.includes('api.resend.com')) {
+        sent.email.push({ url: target, init });
+        return new Response(JSON.stringify({ id: 'mock-email-id' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (target.includes('pushplus.plus')) {
+        sent.pushplus.push({ url: target, init });
+        return new Response(JSON.stringify({ code: 200, msg: 'success' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      throw new Error(`Unexpected external request in test: ${target}`);
     }
   };
   vm.createContext(sandbox);
@@ -83,8 +98,13 @@ async function run() {
     assert.strictEqual(firstStatus.status, 'waiting');
     assert.strictEqual(secondStatus.status, 'waiting');
 
-    const firstLocation = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/get-location?id=${first.requestId}`)));
-    const secondLocation = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/get-location?id=${second.requestId}`)));
+    const firstConfirmUrl = extractConfirmUrl(worker, 0);
+    const secondConfirmUrl = extractConfirmUrl(worker, 1);
+    const firstLocationWithoutToken = await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/get-location?id=${first.requestId}`));
+    assert.strictEqual(firstLocationWithoutToken.status, 403, 'location API must require owner token');
+
+    const firstLocation = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/get-location?id=${first.requestId}&token=${firstConfirmUrl.searchParams.get('token')}`)));
+    const secondLocation = await json(await worker.sandbox.handleRequest(new Request(`https://movecar.test/api/get-location?id=${second.requestId}&token=${secondConfirmUrl.searchParams.get('token')}`)));
     assert.strictEqual(firstLocation.lat, 39.9);
     assert.strictEqual(secondLocation.lat, 31.2);
   }

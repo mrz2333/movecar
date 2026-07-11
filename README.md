@@ -314,6 +314,11 @@ MIT
 
 ## 📝 更新日志
 
+### v1.4.1 (本 Fork)
+
+- 🔐 `/api/get-location` 增加车主确认 token 校验，避免仅凭请求编号读取扫码者位置
+- 🧪 测试通知接口改为严格 mock，防止本地测试误发真实 Telegram/邮件/Pushplus
+
 ### v1.4.0 (本 Fork)
 
 - 🧭 `/owner-confirm` 升级为车主处理台：展示请求者留言、位置地图入口和可选文字地址
